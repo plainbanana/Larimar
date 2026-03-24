@@ -1,0 +1,28 @@
+[defaults]
+bind_address = "127.0.0.1"
+auto_connect = false
+auto_reconnect = true
+
+# Uncomment to explicitly set 1Password SSH Agent socket path.
+# If omitted, the SSH_AUTH_SOCK environment variable is inherited.
+# ssh_auth_sock = "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
+
+# SSH user/port can be set here as defaults, but it's recommended
+# to configure them in ~/.ssh/config instead.
+# ssh_user = "myuser"
+# ssh_port = 22
+
+[tunnels.my-service]
+local_port = 9022
+remote_port = 9022
+remote_host = "localhost"
+ssh_host = "bastion"        # Use a Host alias from ~/.ssh/config
+auto_connect = true
+
+[tunnels.dev-db]
+local_port = 5432
+remote_port = 5432
+remote_host = "db.internal"
+ssh_host = "bastion"
+# auto_connect = false      # default
+# auto_reconnect = true     # default

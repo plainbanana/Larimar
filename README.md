@@ -121,6 +121,56 @@ Reconnecting → (max backoff 300s) → Reconnecting
 Any → (disconnect) → Stopped
 ```
 
+## Nix
+
+### Build with Nix
+
+```bash
+nix build                    # builds CLI + app bundle
+ls result/bin/larimar
+ls result/Applications/Larimar.app
+```
+
+### Development shell
+
+```bash
+nix develop                  # shell with swift-format
+```
+
+### home-manager module
+
+Add Larimar to your flake inputs and import the module for declarative tunnel management with launchd auto-start and Spotlight integration:
+
+```nix
+# flake.nix
+inputs.larimar.url = "github:plainbanana/Larimar";
+
+# home.nix
+imports = [ inputs.larimar.homeManagerModules.default ];
+
+services.larimar = {
+  enable = true;
+  package = inputs.larimar.packages.aarch64-darwin.default;
+
+  defaults = {
+    bind_address = "127.0.0.1";
+    auto_reconnect = true;
+  };
+
+  tunnels = {
+    my-service = {
+      local_port = 9022;
+      remote_port = 9022;
+      remote_host = "localhost";
+      ssh_host = "bastion";
+      auto_connect = true;
+    };
+  };
+};
+```
+
+This generates `~/.config/larimar/tunnels.toml`, registers a launchd agent, symlinks `Larimar.app` to `~/Applications` for Spotlight, and adds `larimar` to `PATH`.
+
 ## Claude Code Integration
 
 An example Claude Code skill is included in `examples/ssh-tunnel/SKILL.md`. Copy it to your skills directory to let Claude manage tunnels via the CLI.

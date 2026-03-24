@@ -171,6 +171,8 @@ services.larimar = {
 
 This generates `~/.config/larimar/tunnels.toml`, registers a launchd agent, symlinks `Larimar.app` to `~/Applications` for Spotlight, and adds `larimar` to `PATH`.
 
+> **Note:** When managed by home-manager, the in-app "Launch at Login" toggle is disabled and shows "Managed by launchd (home-manager)". Auto-start is handled by the launchd agent instead of SMAppService to avoid double-start on login.
+
 ## Claude Code Integration
 
 An example Claude Code skill is included in `examples/ssh-tunnel/SKILL.md`. Copy it to your skills directory to let Claude manage tunnels via the CLI.

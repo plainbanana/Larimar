@@ -53,10 +53,18 @@ struct MenuBarView: View {
             openConfig()
         }
 
-        Toggle("Launch at Login", isOn: $launchAtLogin)
-            .onChange(of: launchAtLogin) { newValue in
-                setLaunchAtLogin(newValue)
-            }
+        if !appState.isManagedLaunch {
+            Toggle("Launch at Login", isOn: $launchAtLogin)
+                .onChange(of: launchAtLogin) { newValue in
+                    setLaunchAtLogin(newValue)
+                }
+        } else {
+            Toggle("Launch at Login", isOn: .constant(true))
+                .disabled(true)
+            Text("  Managed by launchd (home-manager)")
+                .foregroundStyle(.secondary)
+                .font(.caption)
+        }
 
         Divider()
 

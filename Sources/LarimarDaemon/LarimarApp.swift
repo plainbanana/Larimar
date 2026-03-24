@@ -26,6 +26,10 @@ final class AppState: ObservableObject {
     @Published var configError: String?
     @Published var configWarnings: [String] = []
 
+    /// True when launched with --managed (e.g. by home-manager launchd agent).
+    /// Hides the "Launch at Login" toggle to avoid conflict with SMAppService.
+    let isManagedLaunch: Bool = CommandLine.arguments.contains("--managed")
+
     init() {
         let config: LarimarConfig
         do {

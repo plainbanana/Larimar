@@ -2,7 +2,7 @@
 
 A macOS menu bar app for managing SSH port forwarding tunnels. Think Tailscale-like UX for SSH tunnels.
 
-Larimar runs as a menu bar daemon, manages SSH tunnel processes, and exposes a CLI for scripting and integration with tools like [Claude Code](https://claude.ai/claude-code).
+Larimar runs as a menu bar daemon, manages SSH tunnel processes, and exposes a CLI for scripting and integration with tools like Claude Code.
 
 ## Features
 

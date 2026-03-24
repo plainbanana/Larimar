@@ -118,37 +118,41 @@ in
     };
   };
 
-  config = lib.mkIf cfg.enable {
-    # Generate tunnels.toml
-    home.file.".config/larimar/tunnels.toml" = {
-      text = tunnelsToml;
-    };
-
-    # Symlink Larimar.app to ~/Applications for Spotlight
-    home.file."Applications/Larimar.app" = {
-      source = "${cfg.package}/Applications/Larimar.app";
-      recursive = true;
-    };
-
-    # Add larimar CLI to PATH
-    home.packages = [ cfg.package ];
-
-    # Register launchd agent for auto-start
-    # Note: this replaces the in-app "Launch at Login" (SMAppService).
-    # The UI toggle is hidden when managed by home-manager to avoid conflict.
-    launchd.agents.larimar = {
-      enable = true;
-      config = {
-        Label = "com.larimar.daemon";
-        ProgramArguments = [
-          "${cfg.package}/Applications/Larimar.app/Contents/MacOS/LarimarDaemon"
-          "--managed"
-        ];
-        RunAtLoad = true;
-        KeepAlive = false;
-        StandardOutPath = "/tmp/larimar.log";
-        StandardErrorPath = "/tmp/larimar.err";
+  config = lib.mkIf cfg.enable (lib.mkMerge [
+    {
+      # Generate tunnels.toml
+      home.file.".config/larimar/tunnels.toml" = {
+        text = tunnelsToml;
       };
-    };
-  };
+
+      # Add larimar CLI to PATH
+      home.packages = [ cfg.package ];
+    }
+
+    (lib.mkIf pkgs.stdenv.isDarwin {
+      # Symlink Larimar.app to ~/Applications for Spotlight
+      home.file."Applications/Larimar.app" = {
+        source = "${cfg.package}/Applications/Larimar.app";
+        recursive = true;
+      };
+
+      # Register launchd agent for auto-start
+      # Note: this replaces the in-app "Launch at Login" (SMAppService).
+      # The UI toggle is hidden when managed by home-manager to avoid conflict.
+      launchd.agents.larimar = {
+        enable = true;
+        config = {
+          Label = "com.larimar.daemon";
+          ProgramArguments = [
+            "${cfg.package}/Applications/Larimar.app/Contents/MacOS/LarimarDaemon"
+            "--managed"
+          ];
+          RunAtLoad = true;
+          KeepAlive = false;
+          StandardOutPath = "/tmp/larimar.log";
+          StandardErrorPath = "/tmp/larimar.err";
+        };
+      };
+    })
+  ]);
 }

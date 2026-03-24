@@ -70,6 +70,9 @@ let
   # Build the full TOML config
   tunnelsToml =
     let
+      # Mark as managed so the app disables Launch at Login even when opened from Spotlight
+      managedLine = "managed = true";
+
       defaultsSection =
         if cfg.defaults != {} then formatSection "defaults" cfg.defaults
         else "";
@@ -78,7 +81,7 @@ let
         (name: tunnel: formatSection "tunnels.${name}" (tunnelToAttrs tunnel))
         cfg.tunnels;
     in
-    lib.concatStringsSep "\n\n" (lib.filter (s: s != "") ([ defaultsSection ] ++ tunnelSections)) + "\n";
+    lib.concatStringsSep "\n\n" (lib.filter (s: s != "") ([ managedLine defaultsSection ] ++ tunnelSections)) + "\n";
 
   # Convert tunnel submodule to plain attrset for TOML serialization
   tunnelToAttrs = t: {
@@ -145,7 +148,6 @@ in
           Label = "com.larimar.daemon";
           ProgramArguments = [
             "${cfg.package}/Applications/Larimar.app/Contents/MacOS/LarimarDaemon"
-            "--managed"
           ];
           RunAtLoad = true;
           KeepAlive = false;

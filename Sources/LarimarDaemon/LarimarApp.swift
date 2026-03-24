@@ -26,9 +26,9 @@ final class AppState: ObservableObject {
     @Published var configError: String?
     @Published var configWarnings: [String] = []
 
-    /// True when launched with --managed (e.g. by home-manager launchd agent).
-    /// Hides the "Launch at Login" toggle to avoid conflict with SMAppService.
-    let isManagedLaunch: Bool = CommandLine.arguments.contains("--managed")
+    /// True when managed by home-manager (detected via config `managed = true`).
+    /// Hides the "Launch at Login" toggle to avoid conflict with launchd.
+    let isManagedLaunch: Bool
 
     init() {
         let config: LarimarConfig
@@ -40,6 +40,8 @@ final class AppState: ObservableObject {
             configError = error.localizedDescription
             config = LarimarConfig(defaults: DefaultsConfig(), tunnels: [])
         }
+
+        self.isManagedLaunch = config.managed
 
         self.tunnelManager = TunnelManager(config: config)
 

@@ -1,10 +1,12 @@
 import Foundation
 
 public struct LarimarConfig: Sendable {
+    public let managed: Bool
     public let defaults: DefaultsConfig
     public let tunnels: [TunnelConfig]
 
-    public init(defaults: DefaultsConfig, tunnels: [TunnelConfig]) {
+    public init(managed: Bool = false, defaults: DefaultsConfig, tunnels: [TunnelConfig]) {
+        self.managed = managed
         self.defaults = defaults
         self.tunnels = tunnels
     }
@@ -171,6 +173,8 @@ public enum ConfigLoader {
 
     public static func parse(_ toml: String) throws -> ConfigLoadResult {
         let table = try TOMLParser.parse(toml)
+        let managed: Bool
+        if case .bool(let v) = table["managed"] { managed = v } else { managed = false }
         let defaults = parseDefaults(table["defaults"])
         var tunnels: [TunnelConfig] = []
         var warnings: [String] = []
@@ -200,7 +204,7 @@ public enum ConfigLoader {
         }
 
         tunnels.sort { $0.id < $1.id }
-        return ConfigLoadResult(config: LarimarConfig(defaults: defaults, tunnels: tunnels), warnings: warnings)
+        return ConfigLoadResult(config: LarimarConfig(managed: managed, defaults: defaults, tunnels: tunnels), warnings: warnings)
     }
 
     private static func parseDefaults(_ value: TOMLParser.Value?) -> DefaultsConfig {

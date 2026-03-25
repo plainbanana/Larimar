@@ -1,11 +1,13 @@
 # Standalone evaluation test for the home-manager module.
-# Run: nix-instantiate --eval tests/test-hm-module.nix --strict
+# Run: nix-instantiate --eval Tests/test-hm-module.nix --strict
+# Or without NIX_PATH: nix-instantiate --eval Tests/test-hm-module.nix --strict --arg pkgs 'import <path-to-nixpkgs> {}'
 #
 # Tests that the module generates correct TOML for all three tunnel modes
 # and that the remote_port assertion fires for non-dynamic tunnels.
 
+{ pkgs ? import <nixpkgs> {} }:
+
 let
-  pkgs = import <nixpkgs> {};
   lib = pkgs.lib;
 
   # Stub options that home-manager normally provides

@@ -12,17 +12,34 @@ auto_reconnect = true
 # ssh_user = "myuser"
 # ssh_port = 22
 
+# Local forwarding (default): ssh -L bind_address:local_port:forward_host:remote_port
 [tunnels.my-service]
 local_port = 9022
 remote_port = 9022
-remote_host = "localhost"
+forward_host = "localhost"
 ssh_host = "bastion"        # Use a Host alias from ~/.ssh/config
 auto_connect = true
 
 [tunnels.dev-db]
 local_port = 5432
 remote_port = 5432
-remote_host = "db.internal"
+forward_host = "db.internal"
 ssh_host = "bastion"
 # auto_connect = false      # default
 # auto_reconnect = true     # default
+
+# Remote forwarding: ssh -R bind_address:remote_port:forward_host:local_port
+# Exposes a local service on the remote server.
+[tunnels.expose-dev-server]
+mode = "remote"
+local_port = 3000             # local service port
+remote_port = 8080            # port to listen on the remote server
+ssh_host = "bastion"
+
+# Dynamic forwarding (SOCKS proxy): ssh -D bind_address:local_port
+# remote_port and forward_host are not used.
+[tunnels.socks-proxy]
+mode = "dynamic"
+local_port = 1080
+ssh_host = "bastion"
+auto_connect = true

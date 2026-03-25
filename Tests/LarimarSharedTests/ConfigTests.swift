@@ -50,9 +50,10 @@ test("parseMinimalConfig") {
 
     let tunnel = result.config.tunnels[0]
     expect(tunnel.id, "web")
+    expect(tunnel.mode, .local)
     expect(tunnel.localPort, 8080)
     expect(tunnel.remotePort, 8080)
-    expect(tunnel.remoteHost, "localhost")
+    expect(tunnel.forwardHost, "localhost")
     expect(tunnel.sshHost, "myserver")
     expect(tunnel.bindAddress, "127.0.0.1")
     expect(tunnel.autoConnect, false)
@@ -74,7 +75,7 @@ test("parseFullConfig") {
     [tunnels.db]
     local_port = 5432
     remote_port = 5432
-    remote_host = "db.internal"
+    forward_host = "db.internal"
     ssh_host = "bastion"
     auto_connect = false
     auto_reconnect = true
@@ -94,7 +95,7 @@ test("parseFullConfig") {
 
     let tunnel = result.config.tunnels[0]
     expect(tunnel.id, "db")
-    expect(tunnel.remoteHost, "db.internal")
+    expect(tunnel.forwardHost, "db.internal")
     expect(tunnel.autoConnect, false)
     expect(tunnel.autoReconnect, true)
     expect(tunnel.bindAddress, "127.0.0.1")
@@ -196,6 +197,7 @@ test("ipcResponseEncoding") {
     expect(decoded.data?.tunnels.count, 1)
     expect(decoded.data?.tunnels[0].id, "web")
     expect(decoded.data?.tunnels[0].status, .connected)
+    expect(decoded.data?.tunnels[0].mode, .local)
 }
 
 test("inlineComments") {
@@ -251,7 +253,7 @@ test("invalidTunnelSkippedGoodSurvives") {
 test("sshParametersDiffer") {
     let base = TunnelConfig(
         id: "test", localPort: 8080, remotePort: 8080,
-        remoteHost: "localhost", sshHost: "server",
+        forwardHost: "localhost", sshHost: "server",
         bindAddress: "127.0.0.1"
     )
 
@@ -262,7 +264,7 @@ test("sshParametersDiffer") {
     // Different localPort
     let diffPort = TunnelConfig(
         id: "test", localPort: 9090, remotePort: 8080,
-        remoteHost: "localhost", sshHost: "server",
+        forwardHost: "localhost", sshHost: "server",
         bindAddress: "127.0.0.1"
     )
     expect(base.sshParametersDiffer(from: diffPort), true)
@@ -270,7 +272,7 @@ test("sshParametersDiffer") {
     // Different sshHost
     let diffHost = TunnelConfig(
         id: "test", localPort: 8080, remotePort: 8080,
-        remoteHost: "localhost", sshHost: "other-server",
+        forwardHost: "localhost", sshHost: "other-server",
         bindAddress: "127.0.0.1"
     )
     expect(base.sshParametersDiffer(from: diffHost), true)
@@ -278,7 +280,7 @@ test("sshParametersDiffer") {
     // Different bindAddress
     let diffBind = TunnelConfig(
         id: "test", localPort: 8080, remotePort: 8080,
-        remoteHost: "localhost", sshHost: "server",
+        forwardHost: "localhost", sshHost: "server",
         bindAddress: "0.0.0.0"
     )
     expect(base.sshParametersDiffer(from: diffBind), true)
@@ -286,7 +288,7 @@ test("sshParametersDiffer") {
     // Different sshUser
     let diffUser = TunnelConfig(
         id: "test", localPort: 8080, remotePort: 8080,
-        remoteHost: "localhost", sshHost: "server",
+        forwardHost: "localhost", sshHost: "server",
         sshUser: "admin", bindAddress: "127.0.0.1"
     )
     expect(base.sshParametersDiffer(from: diffUser), true)
@@ -294,10 +296,261 @@ test("sshParametersDiffer") {
     // Different autoConnect only — no diff (not an SSH parameter)
     let diffAuto = TunnelConfig(
         id: "test", localPort: 8080, remotePort: 8080,
-        remoteHost: "localhost", sshHost: "server",
+        forwardHost: "localhost", sshHost: "server",
         bindAddress: "127.0.0.1", autoConnect: true
     )
     expect(base.sshParametersDiffer(from: diffAuto), false)
+}
+
+// MARK: - Mode Tests
+
+test("parseTunnelModeLocal") {
+    let toml = """
+    [tunnels.web]
+    mode = "local"
+    local_port = 8080
+    remote_port = 8080
+    ssh_host = "server"
+    """
+
+    let result = try ConfigLoader.parse(toml)
+    expect(result.config.tunnels.count, 1)
+    expect(result.config.tunnels[0].mode, .local)
+}
+
+test("parseTunnelModeRemote") {
+    let toml = """
+    [tunnels.expose]
+    mode = "remote"
+    local_port = 3000
+    remote_port = 8080
+    ssh_host = "server"
+    """
+
+    let result = try ConfigLoader.parse(toml)
+    expect(result.config.tunnels.count, 1)
+    expect(result.config.tunnels[0].mode, .remote)
+}
+
+test("parseTunnelModeDynamic") {
+    let toml = """
+    [tunnels.socks]
+    mode = "dynamic"
+    local_port = 1080
+    ssh_host = "server"
+    """
+
+    let result = try ConfigLoader.parse(toml)
+    expect(result.config.tunnels.count, 1)
+    expect(result.config.tunnels[0].mode, .dynamic)
+    expect(result.config.tunnels[0].remotePort, 0)
+    expect(result.warnings.count, 0)
+}
+
+test("parseTunnelModeDefaultsToLocal") {
+    let toml = """
+    [tunnels.web]
+    local_port = 8080
+    remote_port = 8080
+    ssh_host = "server"
+    """
+
+    let result = try ConfigLoader.parse(toml)
+    expect(result.config.tunnels[0].mode, .local)
+}
+
+test("dynamicModeNoRemotePortRequired") {
+    let toml = """
+    [tunnels.socks]
+    mode = "dynamic"
+    local_port = 1080
+    ssh_host = "server"
+
+    [tunnels.also-socks]
+    mode = "dynamic"
+    local_port = 1081
+    ssh_host = "server"
+    """
+
+    let result = try ConfigLoader.parse(toml)
+    expect(result.config.tunnels.count, 2)
+    expect(result.warnings.count, 0)
+}
+
+test("localModeRequiresRemotePort") {
+    let toml = """
+    [tunnels.broken]
+    mode = "local"
+    local_port = 8080
+    ssh_host = "server"
+    """
+
+    let result = try ConfigLoader.parse(toml)
+    expect(result.config.tunnels.count, 0)
+    expect(result.warnings.count, 1)
+    expect(result.warnings[0], "tunnel 'broken': remote_port is missing or zero")
+}
+
+test("remoteModeRequiresRemotePort") {
+    let toml = """
+    [tunnels.broken]
+    mode = "remote"
+    local_port = 3000
+    ssh_host = "server"
+    """
+
+    let result = try ConfigLoader.parse(toml)
+    expect(result.config.tunnels.count, 0)
+    expect(result.warnings.count, 1)
+    expect(result.warnings[0], "tunnel 'broken': remote_port is missing or zero")
+}
+
+test("unknownModeSkipsTunnel") {
+    let toml = """
+    [tunnels.web]
+    mode = "bogus"
+    local_port = 8080
+    remote_port = 8080
+    ssh_host = "server"
+    """
+
+    let result = try ConfigLoader.parse(toml)
+    expect(result.config.tunnels.count, 0)
+    expect(result.warnings.count, 1)
+    expect(result.warnings[0], "tunnel 'web': unknown mode 'bogus'")
+}
+
+test("remoteHostKeySkipsTunnel") {
+    let toml = """
+    [tunnels.old-style]
+    local_port = 8080
+    remote_port = 8080
+    remote_host = "db.internal"
+    ssh_host = "server"
+    """
+
+    let result = try ConfigLoader.parse(toml)
+    expect(result.config.tunnels.count, 0)
+    expect(result.warnings.count, 1)
+    expect(result.warnings[0], "tunnel 'old-style': 'remote_host' has been renamed to 'forward_host'")
+}
+
+test("forwardHostDefaultsToLocalhost") {
+    let toml = """
+    [tunnels.web]
+    local_port = 8080
+    remote_port = 8080
+    ssh_host = "server"
+    """
+
+    let result = try ConfigLoader.parse(toml)
+    expect(result.config.tunnels[0].forwardHost, "localhost")
+}
+
+test("forwardHostParsed") {
+    let toml = """
+    [tunnels.web]
+    local_port = 8080
+    remote_port = 8080
+    forward_host = "db.internal"
+    ssh_host = "server"
+    """
+
+    let result = try ConfigLoader.parse(toml)
+    expect(result.config.tunnels[0].forwardHost, "db.internal")
+}
+
+// MARK: - SSH Forward Arguments Tests
+
+test("sshForwardArgumentsLocal") {
+    let config = TunnelConfig(
+        id: "test", mode: .local,
+        localPort: 8080, remotePort: 80,
+        forwardHost: "db.internal", sshHost: "server",
+        bindAddress: "127.0.0.1"
+    )
+    expect(config.sshForwardArguments(), ["-L", "127.0.0.1:8080:db.internal:80"])
+}
+
+test("sshForwardArgumentsRemote") {
+    let config = TunnelConfig(
+        id: "test", mode: .remote,
+        localPort: 3000, remotePort: 8080,
+        forwardHost: "localhost", sshHost: "server",
+        bindAddress: "0.0.0.0"
+    )
+    expect(config.sshForwardArguments(), ["-R", "0.0.0.0:8080:localhost:3000"])
+}
+
+test("sshForwardArgumentsDynamic") {
+    let config = TunnelConfig(
+        id: "test", mode: .dynamic,
+        localPort: 1080, remotePort: 0,
+        sshHost: "server", bindAddress: "127.0.0.1"
+    )
+    expect(config.sshForwardArguments(), ["-D", "127.0.0.1:1080"])
+}
+
+// MARK: - IPC Backward Compatibility Tests
+
+test("ipcDecodeWithoutModeDefaultsToLocal") {
+    // Simulate JSON from an older daemon that doesn't include "mode"
+    let json = """
+    {"id":"web","status":"connected","localPort":8080,"remotePort":8080,"sshHost":"server"}
+    """
+    let decoded = try JSONDecoder().decode(TunnelInfo.self, from: Data(json.utf8))
+    expect(decoded.mode, .local)
+    expect(decoded.id, "web")
+    expect(decoded.status, .connected)
+}
+
+test("ipcDecodeWithMode") {
+    let json = """
+    {"id":"socks","status":"connected","mode":"dynamic","localPort":1080,"remotePort":0,"sshHost":"server"}
+    """
+    let decoded = try JSONDecoder().decode(TunnelInfo.self, from: Data(json.utf8))
+    expect(decoded.mode, .dynamic)
+}
+
+test("ipcTunnelInfoRoundTrip") {
+    let tunnelInfo = TunnelInfo(
+        id: "socks",
+        status: .connected,
+        mode: .dynamic,
+        localPort: 1080,
+        remotePort: 0,
+        sshHost: "server"
+    )
+    let data = try JSONEncoder().encode(tunnelInfo)
+    let decoded = try JSONDecoder().decode(TunnelInfo.self, from: data)
+    expect(decoded.mode, .dynamic)
+    expect(decoded.localPort, 1080)
+}
+
+// MARK: - sshParametersDiffer with Mode
+
+test("sshParametersDifferOnModeChange") {
+    let local = TunnelConfig(
+        id: "test", mode: .local, localPort: 8080, remotePort: 8080,
+        sshHost: "server"
+    )
+    let remote = TunnelConfig(
+        id: "test", mode: .remote, localPort: 8080, remotePort: 8080,
+        sshHost: "server"
+    )
+    expect(local.sshParametersDiffer(from: remote), true)
+}
+
+test("sshParametersDifferSameModeNoDiff") {
+    let a = TunnelConfig(
+        id: "test", mode: .dynamic, localPort: 1080, remotePort: 0,
+        sshHost: "server"
+    )
+    let b = TunnelConfig(
+        id: "test", mode: .dynamic, localPort: 1080, remotePort: 0,
+        sshHost: "server"
+    )
+    expect(a.sshParametersDiffer(from: b), false)
 }
 
 // MARK: - Summary

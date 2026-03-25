@@ -7,18 +7,24 @@ let
 
   tunnelSubmodule = lib.types.submodule {
     options = {
+      mode = lib.mkOption {
+        type = lib.types.enum [ "local" "remote" "dynamic" ];
+        default = "local";
+        description = "Forwarding mode: local (-L), remote (-R), or dynamic (-D SOCKS proxy).";
+      };
       local_port = lib.mkOption {
         type = portType;
-        description = "Local port to bind.";
+        description = "Local port to bind (for local/dynamic) or forward to (for remote).";
       };
       remote_port = lib.mkOption {
-        type = portType;
-        description = "Remote port to forward to.";
+        type = lib.types.nullOr portType;
+        default = null;
+        description = "Remote port. Required for local and remote mode, ignored for dynamic.";
       };
-      remote_host = lib.mkOption {
+      forward_host = lib.mkOption {
         type = lib.types.str;
         default = "localhost";
-        description = "Remote host (from the SSH server's perspective).";
+        description = "Destination host for forwarding (from SSH server for local mode, from local machine for remote mode).";
       };
       ssh_host = lib.mkOption {
         type = lib.types.str;
@@ -37,7 +43,7 @@ let
       bind_address = lib.mkOption {
         type = lib.types.str;
         default = "127.0.0.1";
-        description = "Local bind address.";
+        description = "Bind address: local side for -L/-D, remote side for -R.";
       };
       auto_connect = lib.mkOption {
         type = lib.types.bool;
@@ -85,9 +91,10 @@ let
 
   # Convert tunnel submodule to plain attrset for TOML serialization
   tunnelToAttrs = t: {
+    mode = t.mode;
     local_port = t.local_port;
     remote_port = t.remote_port;
-    remote_host = t.remote_host;
+    forward_host = t.forward_host;
     ssh_host = t.ssh_host;
     inherit (t) ssh_user ssh_port;
     bind_address = t.bind_address;
@@ -123,6 +130,11 @@ in
 
   config = lib.mkIf cfg.enable (lib.mkMerge [
     {
+      assertions = lib.mapAttrsToList (name: tunnel: {
+        assertion = tunnel.mode == "dynamic" || tunnel.remote_port != null;
+        message = "services.larimar.tunnels.${name}: remote_port is required for '${tunnel.mode}' mode";
+      }) cfg.tunnels;
+
       # Generate tunnels.toml
       home.file.".config/larimar/tunnels.toml" = {
         text = tunnelsToml;

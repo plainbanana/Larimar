@@ -124,7 +124,15 @@ private func printTunnelTable(_ tunnels: [TunnelInfo]) {
         }
 
         let statusStr = tunnel.status.rawValue.padding(toLength: 14, withPad: " ", startingAt: 0)
-        let portStr = ":\(tunnel.localPort)"
+        let portStr: String
+        switch tunnel.mode {
+        case .local:
+            portStr = "-L :\(tunnel.localPort)"
+        case .remote:
+            portStr = "-R :\(tunnel.remotePort)"
+        case .dynamic:
+            portStr = "-D :\(tunnel.localPort)"
+        }
         var line = "  \(icon) \(tunnel.id.padding(toLength: 20, withPad: " ", startingAt: 0)) \(statusStr) \(portStr)"
         if let err = tunnel.errorMessage {
             line += "  (\(err))"

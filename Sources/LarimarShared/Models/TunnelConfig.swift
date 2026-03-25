@@ -2,9 +2,10 @@ import Foundation
 
 public struct TunnelConfig: Codable, Sendable, Equatable {
     public let id: String
+    public let mode: TunnelMode
     public let localPort: UInt16
     public let remotePort: UInt16
-    public let remoteHost: String
+    public let forwardHost: String
     public let sshHost: String
     public let sshUser: String?
     public let sshPort: UInt16?
@@ -14,9 +15,10 @@ public struct TunnelConfig: Codable, Sendable, Equatable {
 
     public init(
         id: String,
+        mode: TunnelMode = .local,
         localPort: UInt16,
         remotePort: UInt16,
-        remoteHost: String = "localhost",
+        forwardHost: String = "localhost",
         sshHost: String,
         sshUser: String? = nil,
         sshPort: UInt16? = nil,
@@ -25,9 +27,10 @@ public struct TunnelConfig: Codable, Sendable, Equatable {
         autoReconnect: Bool = true
     ) {
         self.id = id
+        self.mode = mode
         self.localPort = localPort
         self.remotePort = remotePort
-        self.remoteHost = remoteHost
+        self.forwardHost = forwardHost
         self.sshHost = sshHost
         self.sshUser = sshUser
         self.sshPort = sshPort
@@ -38,12 +41,25 @@ public struct TunnelConfig: Codable, Sendable, Equatable {
 
     /// Returns true if SSH-relevant parameters differ (requiring reconnection).
     public func sshParametersDiffer(from other: TunnelConfig) -> Bool {
-        localPort != other.localPort
+        mode != other.mode
+            || localPort != other.localPort
             || remotePort != other.remotePort
-            || remoteHost != other.remoteHost
+            || forwardHost != other.forwardHost
             || sshHost != other.sshHost
             || sshUser != other.sshUser
             || sshPort != other.sshPort
             || bindAddress != other.bindAddress
+    }
+
+    /// Returns the SSH port forwarding arguments for this tunnel's mode.
+    public func sshForwardArguments() -> [String] {
+        switch mode {
+        case .local:
+            return ["-L", "\(bindAddress):\(localPort):\(forwardHost):\(remotePort)"]
+        case .remote:
+            return ["-R", "\(bindAddress):\(remotePort):\(forwardHost):\(localPort)"]
+        case .dynamic:
+            return ["-D", "\(bindAddress):\(localPort)"]
+        }
     }
 }

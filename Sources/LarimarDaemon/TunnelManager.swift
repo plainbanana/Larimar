@@ -130,6 +130,7 @@ final class TunnelManager: ObservableObject {
                 TunnelInfo(
                     id: entry.config.id,
                     status: entry.status,
+                    mode: entry.config.mode,
                     localPort: entry.config.localPort,
                     remotePort: entry.config.remotePort,
                     sshHost: entry.config.sshHost,
@@ -151,8 +152,7 @@ final class TunnelManager: ObservableObject {
         var args = ["-N"]
 
         // Port forwarding
-        let forward = "\(config.bindAddress):\(config.localPort):\(config.remoteHost):\(config.remotePort)"
-        args += ["-L", forward]
+        args += config.sshForwardArguments()
 
         // SSH options
         args += ["-o", "ServerAliveInterval=15"]

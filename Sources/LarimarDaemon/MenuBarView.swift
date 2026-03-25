@@ -78,8 +78,7 @@ struct MenuBarView: View {
     @ViewBuilder
     private func tunnelRow(_ tunnel: TunnelInfo) -> some View {
         let isActive = tunnel.status == .connected || tunnel.status == .connecting || tunnel.status == .reconnecting
-        let icon = statusIcon(tunnel.status)
-        let label = "\(icon) \(tunnel.id)  [\(tunnel.status.rawValue)]  :\(tunnel.localPort)"
+        let label = "\(statusIcon(tunnel.status)) \(tunnel.id)  [\(tunnel.status.rawValue)]  \(portLabel(tunnel))"
 
         Button(label) {
             if isActive {
@@ -87,6 +86,17 @@ struct MenuBarView: View {
             } else {
                 appState.tunnelManager.connect(tunnelId: tunnel.id)
             }
+        }
+    }
+
+    private func portLabel(_ tunnel: TunnelInfo) -> String {
+        switch tunnel.mode {
+        case .local:
+            return "-L :\(tunnel.localPort)"
+        case .remote:
+            return "-R :\(tunnel.remotePort)"
+        case .dynamic:
+            return "-D :\(tunnel.localPort)"
         }
     }
 
@@ -118,9 +128,10 @@ struct MenuBarView: View {
             auto_reconnect = true
 
             # [tunnels.example]
+            # mode = "local"            # "local" (-L), "remote" (-R), or "dynamic" (-D)
             # local_port = 8080
             # remote_port = 8080
-            # remote_host = "localhost"
+            # forward_host = "localhost"
             # ssh_host = "myserver"
             """
             FileManager.default.createFile(atPath: path, contents: Data(defaultConfig.utf8))

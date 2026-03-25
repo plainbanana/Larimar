@@ -183,6 +183,19 @@ public enum ConfigLoader {
             // Sort keys for stable warning order
             for id in tunnelsTable.keys.sorted() {
                 guard case .table(let tunnelTable) = tunnelsTable[id] else { continue }
+
+                // Detect renamed key
+                if tunnelTable.string("remote_host") != nil {
+                    warnings.append("tunnel '\(id)': 'remote_host' has been renamed to 'forward_host'")
+                    continue
+                }
+
+                // Validate mode
+                if let modeStr = tunnelTable.string("mode"), TunnelMode(rawValue: modeStr) == nil {
+                    warnings.append("tunnel '\(id)': unknown mode '\(modeStr)'")
+                    continue
+                }
+
                 let tunnel = parseTunnel(id: id, table: tunnelTable, defaults: defaults)
 
                 // Validate required fields
@@ -194,7 +207,7 @@ public enum ConfigLoader {
                     warnings.append("tunnel '\(id)': local_port is missing or zero")
                     continue
                 }
-                if tunnel.remotePort == 0 {
+                if tunnel.mode != .dynamic && tunnel.remotePort == 0 {
                     warnings.append("tunnel '\(id)': remote_port is missing or zero")
                     continue
                 }
@@ -222,11 +235,19 @@ public enum ConfigLoader {
     }
 
     private static func parseTunnel(id: String, table: [String: TOMLParser.Value], defaults: DefaultsConfig) -> TunnelConfig {
-        TunnelConfig(
+        let mode: TunnelMode
+        if let modeStr = table.string("mode") {
+            mode = TunnelMode(rawValue: modeStr) ?? .local
+        } else {
+            mode = .local
+        }
+
+        return TunnelConfig(
             id: id,
+            mode: mode,
             localPort: table.uint16("local_port") ?? 0,
             remotePort: table.uint16("remote_port") ?? 0,
-            remoteHost: table.string("remote_host") ?? "localhost",
+            forwardHost: table.string("forward_host") ?? "localhost",
             sshHost: table.string("ssh_host") ?? "",
             sshUser: table.string("ssh_user") ?? defaults.sshUser,
             sshPort: table.uint16("ssh_port") ?? defaults.sshPort,

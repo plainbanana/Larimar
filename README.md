@@ -1,6 +1,6 @@
 # Larimar
 
-A macOS menu bar app for managing SSH port forwarding tunnels. Think Tailscale-like UX for SSH tunnels.
+A macOS menu bar app for managing SSH tunnels. Think Tailscale-like UX for SSH tunnels. Supports local (`-L`), remote (`-R`), and dynamic/SOCKS (`-D`) forwarding.
 
 Larimar runs as a menu bar daemon, manages SSH tunnel processes, and exposes a CLI for scripting and integration with tools like Claude Code.
 
@@ -55,14 +55,27 @@ auto_reconnect = true
 [tunnels.my-service]
 local_port = 9022
 remote_port = 9022
-remote_host = "localhost"
+forward_host = "localhost"
 ssh_host = "bastion"        # Host alias from ~/.ssh/config
 auto_connect = true
 
 [tunnels.dev-db]
 local_port = 5432
 remote_port = 5432
-remote_host = "db.internal"
+forward_host = "db.internal"
+ssh_host = "bastion"
+
+# Remote forwarding: expose local port 3000 on the remote server as port 8080
+[tunnels.expose-dev]
+mode = "remote"
+local_port = 3000
+remote_port = 8080
+ssh_host = "bastion"
+
+# Dynamic forwarding: SOCKS proxy on local port 1080
+[tunnels.socks-proxy]
+mode = "dynamic"
+local_port = 1080
 ssh_host = "bastion"
 ```
 
@@ -72,15 +85,21 @@ SSH connection details (user, port, identity file, ProxyJump, etc.) should be co
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `local_port` | int | (required) | Local port to bind |
-| `remote_port` | int | (required) | Remote port to forward to |
-| `remote_host` | string | `"localhost"` | Remote host (from the SSH server's perspective) |
+| `mode` | string | `"local"` | Forwarding mode: `"local"` (`-L`), `"remote"` (`-R`), or `"dynamic"` (`-D` SOCKS proxy) |
+| `local_port` | int | (required) | Local port |
+| `remote_port` | int | (required\*) | Remote port (\*not required for dynamic mode) |
+| `forward_host` | string | `"localhost"` | Destination host for forwarding |
 | `ssh_host` | string | (required) | SSH host or `~/.ssh/config` Host alias |
-| `bind_address` | string | `"127.0.0.1"` | Local bind address |
+| `bind_address` | string | `"127.0.0.1"` | Bind address (local side for `-L`/`-D`, remote side for `-R`) |
 | `auto_connect` | bool | `false` | Connect automatically when daemon starts |
 | `auto_reconnect` | bool | `true` | Reconnect on disconnection with exponential backoff |
 | `ssh_user` | string | — | Override SSH user (prefer `~/.ssh/config`) |
 | `ssh_port` | int | — | Override SSH port (prefer `~/.ssh/config`) |
+
+**SSH commands per mode:**
+- **Local** (`-L`): `ssh -L bind_address:local_port:forward_host:remote_port` — listen locally, forward to remote
+- **Remote** (`-R`): `ssh -R bind_address:remote_port:forward_host:local_port` — listen on remote, forward to local
+- **Dynamic** (`-D`): `ssh -D bind_address:local_port` — local SOCKS proxy
 
 ## CLI Usage
 
@@ -99,7 +118,7 @@ The CLI communicates with the daemon via a Unix domain socket at `~/Library/Appl
 
 ```
 LarimarDaemon (menu bar app)
-├── TunnelManager — spawns/monitors/kills ssh -N -L processes
+├── TunnelManager — spawns/monitors/kills ssh -N -L/-R/-D processes
 ├── IPCServer — Unix domain socket, one JSON request/response per connection
 ├── ConfigWatcher — DispatchSource file monitoring
 └── NetworkMonitor — NWPathMonitor for connectivity changes
@@ -161,9 +180,14 @@ services.larimar = {
     my-service = {
       local_port = 9022;
       remote_port = 9022;
-      remote_host = "localhost";
+      forward_host = "localhost";
       ssh_host = "bastion";
       auto_connect = true;
+    };
+    socks-proxy = {
+      mode = "dynamic";
+      local_port = 1080;
+      ssh_host = "bastion";
     };
   };
 };

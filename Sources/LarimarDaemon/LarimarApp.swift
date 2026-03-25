@@ -1,5 +1,6 @@
 import SwiftUI
 import LarimarShared
+import OSLog
 
 @main
 struct LarimarApp: App {
@@ -34,7 +35,7 @@ final class AppState: ObservableObject {
         // Prevent duplicate instances: if another daemon is already listening
         // on the IPC socket, exit immediately.
         if Self.isAnotherInstanceRunning() {
-            print("[Larimar] Another instance is already running. Exiting.")
+            Log.daemon.notice("Another instance is already running. Exiting.")
             exit(0)
         }
 
@@ -43,7 +44,9 @@ final class AppState: ObservableObject {
             let result = try ConfigLoader.load()
             config = result.config
             configWarnings = result.warnings
+            Log.config.info("Configuration loaded: \(config.tunnels.count) tunnel(s)")
         } catch {
+            Log.config.error("Failed to load configuration: \(error, privacy: .private)")
             configError = error.localizedDescription
             config = LarimarConfig(defaults: DefaultsConfig(), tunnels: [])
         }
@@ -63,7 +66,7 @@ final class AppState: ObservableObject {
             try server.start()
             self.ipcServer = server
         } catch {
-            print("[Larimar] Failed to start IPC server: \(error)")
+            Log.ipc.error("Failed to start IPC server: \(error, privacy: .private)")
         }
 
         // Config file watcher
@@ -121,7 +124,9 @@ final class AppState: ObservableObject {
             configError = nil
             configWarnings = result.warnings
             tunnelManager.reloadConfig(result.config)
+            Log.config.info("Configuration reloaded: \(result.config.tunnels.count) tunnel(s)")
         } catch {
+            Log.config.error("Failed to reload configuration: \(error, privacy: .private)")
             configError = error.localizedDescription
             configWarnings = []
         }

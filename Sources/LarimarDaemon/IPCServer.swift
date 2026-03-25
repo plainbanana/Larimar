@@ -1,5 +1,6 @@
 import Foundation
 import LarimarShared
+import OSLog
 
 /// Unix domain socket server for IPC with CLI clients.
 /// Protocol: one JSON request per connection, one JSON response back, then close.
@@ -80,6 +81,7 @@ final class IPCServer {
         }
         self.listenSource = source
         source.resume()
+        Log.ipc.info("IPC server listening")
     }
 
     func stop() {
@@ -175,6 +177,7 @@ final class IPCServer {
             let response = handleCommand(request)
             return try encoder.encode(response)
         } catch {
+            Log.ipc.notice("Invalid IPC request: \(error, privacy: .private)")
             let errorResponse = IPCResponse.fail(id: "unknown", error: "Invalid request: \(error.localizedDescription)")
             return (try? encoder.encode(errorResponse)) ?? Data()
         }

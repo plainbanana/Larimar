@@ -1,6 +1,7 @@
 import SwiftUI
 import LarimarShared
 import ServiceManagement
+import OSLog
 
 struct MenuBarView: View {
     @ObservedObject var appState: AppState
@@ -148,7 +149,7 @@ struct MenuBarView: View {
                 try SMAppService.mainApp.unregister()
             }
         } catch {
-            print("[Larimar] Failed to set launch at login: \(error)")
+            Log.daemon.error("Failed to set launch at login: \(error, privacy: .private)")
             launchAtLogin = SMAppService.mainApp.status == .enabled
         }
     }

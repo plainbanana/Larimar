@@ -1,5 +1,6 @@
 import Foundation
 import LarimarShared
+import OSLog
 
 /// Manages SSH tunnel processes and their lifecycle.
 @MainActor
@@ -79,6 +80,7 @@ final class TunnelManager: ObservableObject {
         entry.status = .connecting
         entry.errorMessage = nil
         tunnelStates[tunnelId] = entry
+        Log.ssh.info("Connecting tunnel \(tunnelId, privacy: .private(mask: .hash))")
 
         spawnSSH(tunnelId: tunnelId)
     }
@@ -91,6 +93,7 @@ final class TunnelManager: ObservableObject {
         entry.retryCount = 0
 
         if let process = entry.process, process.isRunning {
+            Log.ssh.info("Disconnecting tunnel \(tunnelId, privacy: .private(mask: .hash))")
             process.terminate()
         }
 
@@ -191,6 +194,7 @@ final class TunnelManager: ObservableObject {
 
         do {
             try process.run()
+            Log.ssh.info("SSH spawned for \(tunnelId, privacy: .private(mask: .hash)), pid=\(process.processIdentifier)")
             tunnelStates[tunnelId]?.process = process
             // Mark connected after a short delay to confirm the process stays alive
             Task {
@@ -201,6 +205,7 @@ final class TunnelManager: ObservableObject {
                 }
             }
         } catch {
+            Log.ssh.error("Failed to spawn SSH for \(tunnelId, privacy: .private(mask: .hash)): \(error, privacy: .private)")
             tunnelStates[tunnelId]?.status = .error
             tunnelStates[tunnelId]?.errorMessage = error.localizedDescription
             tunnelStates[tunnelId]?.process = nil
@@ -230,11 +235,13 @@ final class TunnelManager: ObservableObject {
                 errorMessage = "SSH exited with code \(exitCode)"
             }
 
+            Log.ssh.notice("SSH terminated for \(tunnelId, privacy: .private(mask: .hash)), exit=\(exitCode), stderr: \(errorMessage ?? "none", privacy: .private(mask: .hash)), scheduling reconnect")
             entry.status = .reconnecting
             entry.errorMessage = errorMessage
             tunnelStates[tunnelId] = entry
             scheduleReconnect(tunnelId: tunnelId)
         } else {
+            Log.ssh.error("SSH terminated for \(tunnelId, privacy: .private(mask: .hash)), exit=\(exitCode), autoReconnect disabled")
             entry.status = .error
             entry.errorMessage = "SSH exited with code \(exitCode)"
             tunnelStates[tunnelId] = entry
@@ -254,6 +261,7 @@ final class TunnelManager: ObservableObject {
         let delay = max(1.0, baseDelay + jitter)
 
         entry.retryCount += 1
+        Log.ssh.info("Scheduling reconnect for \(tunnelId, privacy: .private(mask: .hash)) in \(String(format: "%.1f", delay))s (attempt \(entry.retryCount))")
         let task = Task {
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             guard !Task.isCancelled else { return }

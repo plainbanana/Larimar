@@ -163,8 +163,6 @@ in
           ];
           RunAtLoad = true;
           KeepAlive = false;
-          StandardOutPath = "/tmp/larimar.log";
-          StandardErrorPath = "/tmp/larimar.err";
         };
       };
     })

@@ -1,6 +1,7 @@
 import Foundation
 import Network
 import LarimarShared
+import OSLog
 
 /// Monitors network path changes and notifies when connectivity is restored.
 final class NetworkMonitor: @unchecked Sendable {
@@ -19,6 +20,7 @@ final class NetworkMonitor: @unchecked Sendable {
             guard let self else { return }
             if path.status == .satisfied && self.wasUnsatisfied {
                 self.wasUnsatisfied = false
+                Log.daemon.info("Network restored, triggering reconnection")
                 self.onNetworkRestored()
             } else if path.status != .satisfied {
                 self.wasUnsatisfied = true
@@ -80,6 +82,7 @@ final class ConfigWatcher {
                     self?.startWatching()
                 }
             }
+            Log.config.info("Configuration file changed, reloading")
             self.onChange()
         }
 

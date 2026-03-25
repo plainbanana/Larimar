@@ -20,13 +20,28 @@
     {
       packages.${system}.default = pkgs.swiftPackages.stdenv.mkDerivation {
         pname = "larimar";
-        version = "0.1.0";
+        version = builtins.replaceStrings ["\n" "\r"] ["" ""] (builtins.readFile ./VERSION);
         src = ./.;
 
         nativeBuildInputs = with pkgs; [ swift swiftpm ];
 
         configurePhase = ''
           export HOME=$TMPDIR
+
+          # Generate Version.swift from VERSION (overrides checked-in file)
+          version_str=$(tr -d '\n\r' < ${./VERSION})
+          cat > Sources/LarimarShared/Version.swift << SWIFT
+          public enum LarimarVersion {
+              public static let current = "$version_str"
+          }
+          SWIFT
+
+          # Rewrite CFBundleShortVersionString in Info.plist by key
+          sed -i "/<key>CFBundleShortVersionString<\/key>/{n;s|<string>.*</string>|<string>$version_str</string>|;}" \
+            Resources/Info.plist
+          # Assert the replacement succeeded
+          grep -q "<string>$version_str</string>" Resources/Info.plist \
+            || (echo "Failed to set version in Info.plist" >&2 && exit 1)
 
           # Pre-populate SwiftPM checkouts to avoid network access
           mkdir -p .build/checkouts

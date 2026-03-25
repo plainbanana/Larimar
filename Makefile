@@ -2,12 +2,25 @@ PREFIX ?= $(HOME)/.local
 APP_NAME = Larimar.app
 BUILD_DIR = .build/release
 BUNDLE_DIR = $(BUILD_DIR)/$(APP_NAME)
+VERSION := $(shell cat VERSION)
 
-.PHONY: all build bundle install uninstall clean
+.PHONY: all build bundle install uninstall clean check-version
 
 all: bundle
 
-build:
+check-version:
+	@v=$$(cat VERSION); \
+	actual_swift=$$(grep 'current = ' Sources/LarimarShared/Version.swift | sed 's/.*"\(.*\)".*/\1/'); \
+	if [ "$$actual_swift" != "$$v" ]; then \
+		echo "Version.swift ($$actual_swift) != VERSION ($$v)" >&2; exit 1; \
+	fi; \
+	actual_plist=$$(/usr/bin/plutil -extract CFBundleShortVersionString raw Resources/Info.plist); \
+	if [ "$$actual_plist" != "$$v" ]; then \
+		echo "Info.plist ($$actual_plist) != VERSION ($$v)" >&2; exit 1; \
+	fi; \
+	echo "Version $$v is consistent"
+
+build: check-version
 	swift build -c release
 
 bundle: build

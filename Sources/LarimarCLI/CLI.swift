@@ -7,7 +7,8 @@ struct LarimarCLI: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "larimar",
         abstract: "CLI for Larimar SSH tunnel manager",
-        subcommands: [Status.self, Connect.self, Disconnect.self, List.self]
+        version: LarimarVersion.current,
+        subcommands: [Status.self, Connect.self, Disconnect.self, List.self, Version.self]
     )
 }
 
@@ -102,6 +103,18 @@ struct List: AsyncParsableCommand {
             throw ExitCode.failure
         }
         printTunnelTable(data.tunnels)
+    }
+}
+
+// MARK: - Version
+
+struct Version: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Show Larimar version"
+    )
+
+    func run() {
+        print(LarimarVersion.current)
     }
 }
 

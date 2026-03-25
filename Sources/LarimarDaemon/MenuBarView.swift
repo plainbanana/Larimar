@@ -69,6 +69,10 @@ struct MenuBarView: View {
 
         Divider()
 
+        Text("Larimar \(LarimarVersion.current)")
+            .foregroundStyle(.secondary)
+            .font(.caption)
+
         Button("Quit") {
             appState.tunnelManager.disconnectAll()
             NSApplication.shared.terminate(nil)

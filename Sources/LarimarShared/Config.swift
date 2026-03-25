@@ -190,10 +190,14 @@ public enum ConfigLoader {
                     continue
                 }
 
-                // Validate mode
-                if let modeStr = tunnelTable.string("mode"), TunnelMode(rawValue: modeStr) == nil {
-                    warnings.append("tunnel '\(id)': unknown mode '\(modeStr)'")
-                    continue
+                // Validate mode: must be a recognized string if present
+                if let modeValue = tunnelTable["mode"] {
+                    guard case .string(let modeStr) = modeValue, TunnelMode(rawValue: modeStr) != nil else {
+                        let desc: String
+                        if case .string(let s) = modeValue { desc = "'\(s)'" } else { desc = "non-string value" }
+                        warnings.append("tunnel '\(id)': invalid mode \(desc)")
+                        continue
+                    }
                 }
 
                 let tunnel = parseTunnel(id: id, table: tunnelTable, defaults: defaults)

@@ -417,7 +417,29 @@ test("unknownModeSkipsTunnel") {
     let result = try ConfigLoader.parse(toml)
     expect(result.config.tunnels.count, 0)
     expect(result.warnings.count, 1)
-    expect(result.warnings[0], "tunnel 'web': unknown mode 'bogus'")
+    expect(result.warnings[0], "tunnel 'web': invalid mode 'bogus'")
+}
+
+test("nonStringModeSkipsTunnel") {
+    let toml = """
+    [tunnels.bool-mode]
+    mode = true
+    local_port = 8080
+    remote_port = 8080
+    ssh_host = "server"
+
+    [tunnels.int-mode]
+    mode = 1
+    local_port = 9090
+    remote_port = 9090
+    ssh_host = "server"
+    """
+
+    let result = try ConfigLoader.parse(toml)
+    expect(result.config.tunnels.count, 0)
+    expect(result.warnings.count, 2)
+    expect(result.warnings[0], "tunnel 'bool-mode': invalid mode non-string value")
+    expect(result.warnings[1], "tunnel 'int-mode': invalid mode non-string value")
 }
 
 test("remoteHostKeySkipsTunnel") {
@@ -539,6 +561,26 @@ test("sshParametersDifferOnModeChange") {
         sshHost: "server"
     )
     expect(local.sshParametersDiffer(from: remote), true)
+}
+
+test("sshParametersDifferDynamicIgnoresUnusedFields") {
+    let a = TunnelConfig(
+        id: "test", mode: .dynamic, localPort: 1080, remotePort: 0,
+        forwardHost: "localhost", sshHost: "server"
+    )
+    // Different remotePort and forwardHost should NOT trigger differ for dynamic
+    let b = TunnelConfig(
+        id: "test", mode: .dynamic, localPort: 1080, remotePort: 9999,
+        forwardHost: "other.host", sshHost: "server"
+    )
+    expect(a.sshParametersDiffer(from: b), false)
+
+    // But different localPort should still trigger
+    let c = TunnelConfig(
+        id: "test", mode: .dynamic, localPort: 2080, remotePort: 0,
+        sshHost: "server"
+    )
+    expect(a.sshParametersDiffer(from: c), true)
 }
 
 test("sshParametersDifferSameModeNoDiff") {

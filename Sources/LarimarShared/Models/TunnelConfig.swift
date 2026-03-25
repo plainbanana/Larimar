@@ -40,15 +40,21 @@ public struct TunnelConfig: Codable, Sendable, Equatable {
     }
 
     /// Returns true if SSH-relevant parameters differ (requiring reconnection).
+    /// For dynamic mode, remotePort and forwardHost are not part of the SSH
+    /// command and are excluded from the comparison to avoid needless reconnects.
     public func sshParametersDiffer(from other: TunnelConfig) -> Bool {
-        mode != other.mode
-            || localPort != other.localPort
-            || remotePort != other.remotePort
-            || forwardHost != other.forwardHost
-            || sshHost != other.sshHost
-            || sshUser != other.sshUser
-            || sshPort != other.sshPort
-            || bindAddress != other.bindAddress
+        if mode != other.mode { return true }
+        if localPort != other.localPort { return true }
+        if sshHost != other.sshHost { return true }
+        if sshUser != other.sshUser { return true }
+        if sshPort != other.sshPort { return true }
+        if bindAddress != other.bindAddress { return true }
+        // remotePort and forwardHost only matter for local/remote modes
+        if mode != .dynamic {
+            if remotePort != other.remotePort { return true }
+            if forwardHost != other.forwardHost { return true }
+        }
+        return false
     }
 
     /// Returns the SSH port forwarding arguments for this tunnel's mode.

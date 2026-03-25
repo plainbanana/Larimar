@@ -31,6 +31,13 @@ final class AppState: ObservableObject {
     let isManagedLaunch: Bool
 
     init() {
+        // Prevent duplicate instances: if another daemon is already listening
+        // on the IPC socket, exit immediately.
+        if Self.isAnotherInstanceRunning() {
+            print("[Larimar] Another instance is already running. Exiting.")
+            exit(0)
+        }
+
         let config: LarimarConfig
         do {
             let result = try ConfigLoader.load()
@@ -78,6 +85,34 @@ final class AppState: ObservableObject {
 
         // Auto-connect configured tunnels
         tunnelManager.autoConnectIfNeeded()
+    }
+
+    /// Check if another daemon instance is already running by attempting
+    /// to connect to the IPC socket. A successful connect means the socket
+    /// is actively listened on by another process.
+    private static func isAnotherInstanceRunning() -> Bool {
+        let path = LarimarConstants.socketPath
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+        withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
+            let bytes = path.utf8CString
+            ptr.withMemoryRebound(to: CChar.self, capacity: bytes.count) { dest in
+                bytes.withUnsafeBufferPointer { src in
+                    _ = memcpy(dest, src.baseAddress!, src.count)
+                }
+            }
+        }
+
+        let result = withUnsafePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
+                connect(fd, sockPtr, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        return result == 0
     }
 
     private func reloadConfig() {

@@ -1,3 +1,10 @@
+---
+name: ssh-tunnel
+description: "Manage SSH tunnels through the Larimar daemon. Connect, disconnect, check status, and list configured tunnels."
+allowed-tools: Bash(larimar *)
+argument-hint: [connect|disconnect|status|list] [tunnel-id]
+---
+
 # ssh-tunnel
 
 Manage SSH tunnels through the Larimar daemon.

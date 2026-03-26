@@ -1,6 +1,6 @@
 # Larimar
 
-A macOS menu bar app for managing SSH tunnels. Think Tailscale-like UX for SSH tunnels. Supports local (`-L`), remote (`-R`), and dynamic/SOCKS (`-D`) forwarding.
+A macOS menu bar app for managing SSH tunnels. Supports local (`-L`), remote (`-R`), and dynamic/SOCKS (`-D`) forwarding.
 
 Larimar runs as a menu bar daemon, manages SSH tunnel processes, and exposes a CLI for scripting and integration with tools like Claude Code.
 

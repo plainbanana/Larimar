@@ -7,3 +7,6 @@ Package.resolved
 .idea/
 .claude/
 result
+
+.DS_Store
+

@@ -13,6 +13,8 @@ Larimar runs as a menu bar daemon, manages SSH tunnel processes, and exposes a C
 - **SSH config delegation** — user, port, key, ProxyJump, etc. are all managed in `~/.ssh/config`
 - **1Password SSH Agent** — works out of the box; TouchID is prompted automatically via the agent
 - **Launch at Login** — toggle from the menu bar via `SMAppService`
+- **Remote forward requests** — allowed remote hosts can ask for new forwards with `curl`, each new forward requires your approval
+- **Hints and grouping** — group tunnels by app (e.g. someapp, otherapp) and show what each port is currently used for
 - **Claude Code skill** — included example skill for AI-driven tunnel management
 
 ## Requirements
@@ -95,11 +97,95 @@ SSH connection details (user, port, identity file, ProxyJump, etc.) should be co
 | `auto_reconnect` | bool | `true` | Reconnect on disconnection with exponential backoff |
 | `ssh_user` | string | — | Override SSH user (prefer `~/.ssh/config`) |
 | `ssh_port` | int | — | Override SSH port (prefer `~/.ssh/config`) |
+| `app` | string | — | Group name shown in the menu (`a-z 0-9 . _ -`, max 32), e.g. `"someapp"` |
 
 **SSH commands per mode:**
 - **Local** (`-L`): `ssh -L bind_address:local_port:forward_host:remote_port` — listen locally, forward to remote
 - **Remote** (`-R`): `ssh -R bind_address:remote_port:forward_host:local_port` — listen on remote, forward to local
 - **Dynamic** (`-D`): `ssh -D bind_address:local_port` — local SOCKS proxy
+
+Every ssh process Larimar starts is run with `-o ControlMaster=no -o ControlPath=none -o ForkAfterAuthentication=no`, so connection sharing from `~/.ssh/config` is not used. This guarantees that disconnecting a tunnel actually tears down its forward.
+
+Tunnel ssh processes also get `-o PermitLocalCommand=yes -o LocalCommand="echo larimar-ready"`. ssh runs `LocalCommand` only after authentication succeeds, so a tunnel stays `connecting` (and the menu bar shows an hourglass) while ssh waits for the SSH agent, e.g. a 1Password approval prompt. A `LocalCommand` set in `~/.ssh/config` is overridden for these processes.
+
+## Remote Forward Requests (control socket)
+
+Tools that are often used together with LLM agents, such as review or diff viewers, start web UIs on changing ports on a remote machine. With the control socket enabled, a remote host can ask Larimar to forward such a port and attach a short hint describing what it is used for. The remote side needs only `curl`; Larimar does not need to be installed there.
+
+```toml
+[control]
+enabled = true             # default: false
+approval_timeout = 120     # seconds to wait for approval (10-3600)
+
+[control.hosts.devbox]     # name: A-Z a-z 0-9 _ -
+ssh_host = "devbox"        # ssh_config alias or hostname
+auto_connect = true        # ssh_user / ssh_port / auto_connect inherit [defaults]
+```
+
+### How it works
+
+```
+remote (curl only)                                Mac
+curl ──▶ ~/.larimar/control.sock ══ ssh -R ══▶ $TMPDIR/larimar-control/<id>.sock ──▶ Larimar
+         (directory 0700)                          (directory 0700, socket 0600, one per host)
+
+larimar CLI (Mac) ──────────────────────────▶ ~/Library/Application Support/Larimar/larimar.sock
+```
+
+For each allowed host Larimar keeps a *control connection*:
+
+1. Before every connection attempt it runs a small POSIX `sh` script on the remote host over ssh. The script creates `~/.larimar` with mode 0700 (refusing symlinks and directories owned by someone else) and removes a stale `control.sock` (refusing to remove anything that is not a socket).
+2. It then runs `ssh -N -R ~/.larimar/control.sock:<Mac socket>`. Remote Unix socket forwarding must be allowed by sshd (`AllowStreamLocalForwarding`, enabled by default).
+
+The Mac socket a request arrives on tells Larimar which host sent it. If the same remote user is connected from two Macs, the one that connected last receives the requests.
+
+### Security model
+
+- There is no authentication token. Access is limited by file permissions instead: on the remote host only the same user (and root) can reach `~/.larimar/control.sock`, and on the Mac only your user can reach the Mac-side socket. The mode of the remote socket itself is decided by sshd's `StreamLocalBindMask` (default `0177`); the 0700 directory is the main boundary.
+- Any process running as your user on an allowed remote host, including LLM agents, can list its forwards, set hints, and request new forwards. **Creating a new forward always requires your approval** in a Larimar dialog (or from the menu). The same request is rejected for 60 seconds after you deny it (`403 recently_denied`); clear it from *Recently Denied* in the menu to be asked again. At most 3 approvals can be pending per host.
+- A request that matches an existing `local` tunnel from `tunnels.toml` through the same SSH host/user/port is treated as already approved: its hint is updated and it is connected if stopped.
+- A host only sees its own dynamic forwards and the configured `local` tunnels that use its SSH identity. Removing a host from the configuration, or changing its `ssh_host`/`ssh_user`/`ssh_port`, removes its dynamic forwards and pending requests.
+- Dynamic forwards bind to `127.0.0.1` on the Mac and live in memory only; they disappear when Larimar quits.
+
+### API (v1)
+
+All requests go to `http://larimar/v1/...` over the Unix socket. Request bodies must be JSON with `Content-Type: application/json`.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/v1/health` | Version and the host name as seen by Larimar |
+| `GET` | `/v1/forwards` | Forwards visible to this host |
+| `POST` | `/v1/forwards` | Request a forward: `{"app", "remote_port", "forward_host"?, "local_port"?, "hint"?}` |
+| `GET` | `/v1/forwards/{id}` | One forward |
+| `DELETE` | `/v1/forwards/{id}` | Remove a dynamic forward (for a configured tunnel, only its hint is cleared) |
+| `POST` | `/v1/forwards/{id}/hint` | Set the hint: `{"hint": "..."}` (max 200 characters) |
+| `DELETE` | `/v1/forwards/{id}/hint` | Clear the hint |
+
+`POST /v1/forwards` responds with:
+
+- `200` when an existing forward already covers the request (the hint is updated)
+- `201` when a new forward was approved and created; the status is `connecting` at that point, so poll `GET /v1/forwards/{id}` for `status` and `error`. `connected` means ssh has authenticated, not that the remote port is reachable
+- `403` denied (`denied`, or `recently_denied` within 60 seconds of a denial), `408` not approved in time, `409` the requested `local_port` is in use or differs from an existing forward, `429` too many pending requests
+
+If `local_port` is omitted, Larimar uses the same number as `remote_port` when it is free on the Mac, otherwise any free port. The response contains `local_url`.
+
+```sh
+S="$HOME/.larimar/control.sock"
+
+# Request a forward for a someapp instance listening on remote port 4980
+curl -s --unix-socket "$S" -X POST http://larimar/v1/forwards \
+  -H 'Content-Type: application/json' \
+  -d '{"app":"someapp","remote_port":4980,"hint":"PR #123 review"}'
+
+# Update the hint, then remove the forward
+curl -s --unix-socket "$S" -X POST http://larimar/v1/forwards/dyn:1a2b3c4d/hint \
+  -H 'Content-Type: application/json' -d '{"hint":"PR #124 review"}'
+curl -s --unix-socket "$S" -X DELETE http://larimar/v1/forwards/dyn:1a2b3c4d
+```
+
+### Menu
+
+The menu shows *Pending Approvals*, *Recently Denied* requests, *Configured* tunnels, *Dynamic* forwards, and *Control* connections. Tunnels with the same `app` are grouped into a submenu. Each tunnel has *Connect/Disconnect* and, when a hint is set, *Clear Hint*; local forwards also have *Open in Browser* and *Copy URL*, and dynamic forwards have *Remove*.
 
 ## CLI Usage
 
@@ -110,6 +196,9 @@ larimar connect my-service  # Connect a specific tunnel
 larimar disconnect my-service
 larimar connect --all       # Connect all tunnels
 larimar disconnect --all    # Disconnect all tunnels
+larimar hint someapp-4970 "PR #123 review"   # Set a hint (use --clear to remove)
+larimar remove dyn:1a2b3c4d                 # Remove a dynamic forward
+larimar control connect devbox              # Connect/disconnect a control connection
 ```
 
 The CLI communicates with the daemon via a Unix domain socket at `~/Library/Application Support/Larimar/larimar.sock`. The daemon must be running.
@@ -120,6 +209,9 @@ The CLI communicates with the daemon via a Unix domain socket at `~/Library/Appl
 LarimarDaemon (menu bar app)
 ├── TunnelManager — spawns/monitors/kills ssh -N -L/-R/-D processes
 ├── IPCServer — Unix domain socket, one JSON request/response per connection
+├── ControlServer — per-host control sockets serving the v1 HTTP API
+├── ControlConnectionManager — remote pre-step + ssh -R for each allowed host
+├── ApprovalCoordinator — approval panel and pending request bookkeeping
 ├── ConfigWatcher — DispatchSource file monitoring
 └── NetworkMonitor — NWPathMonitor for connectivity changes
 
@@ -133,7 +225,7 @@ LarimarCLI (larimar)
 ### Tunnel state machine
 
 ```
-Stopped → Connecting → Connected
+Stopped → Connecting → (authenticated) → Connected
 Connected → (process died) → Reconnecting → Connecting
 Connected → (disconnect) → Stopped
 Reconnecting → (max backoff 300s) → Reconnecting
@@ -188,6 +280,14 @@ services.larimar = {
       mode = "dynamic";
       local_port = 1080;
       ssh_host = "bastion";
+    };
+  };
+
+  control = {
+    enable = true;
+    hosts.devbox = {
+      ssh_host = "devbox";
+      auto_connect = true;
     };
   };
 };

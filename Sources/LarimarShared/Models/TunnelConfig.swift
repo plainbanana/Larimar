@@ -12,6 +12,8 @@ public struct TunnelConfig: Codable, Sendable, Equatable {
     public let bindAddress: String
     public let autoConnect: Bool
     public let autoReconnect: Bool
+    /// Optional grouping key shown in the menu (e.g. "someapp", "otherapp").
+    public let app: String?
 
     public init(
         id: String,
@@ -24,7 +26,8 @@ public struct TunnelConfig: Codable, Sendable, Equatable {
         sshPort: UInt16? = nil,
         bindAddress: String = "127.0.0.1",
         autoConnect: Bool = false,
-        autoReconnect: Bool = true
+        autoReconnect: Bool = true,
+        app: String? = nil
     ) {
         self.id = id
         self.mode = mode
@@ -37,6 +40,7 @@ public struct TunnelConfig: Codable, Sendable, Equatable {
         self.bindAddress = bindAddress
         self.autoConnect = autoConnect
         self.autoReconnect = autoReconnect
+        self.app = app
     }
 
     /// Returns true if SSH-relevant parameters differ (requiring reconnection).

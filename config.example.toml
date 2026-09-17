@@ -19,6 +19,7 @@ remote_port = 9022
 forward_host = "localhost"
 ssh_host = "bastion"        # Use a Host alias from ~/.ssh/config
 auto_connect = true
+# app = "someapp"           # optional: group tunnels by app name in the menu
 
 [tunnels.dev-db]
 local_port = 5432
@@ -43,3 +44,13 @@ mode = "dynamic"
 local_port = 1080
 ssh_host = "bastion"
 auto_connect = true
+
+# Control socket: let allowed remote hosts request forwards with curl.
+# Every new forward requires approval on the Mac. See README for details.
+# [control]
+# enabled = true
+# approval_timeout = 120
+#
+# [control.hosts.devbox]
+# ssh_host = "devbox"
+# auto_connect = true

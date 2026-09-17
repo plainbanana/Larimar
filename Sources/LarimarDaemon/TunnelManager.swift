@@ -8,6 +8,7 @@ final class TunnelManager: ObservableObject {
     @Published private(set) var tunnelStates: [String: TunnelEntry] = [:]
 
     private var sshAuthSock: String?
+    private var isShuttingDown = false
 
     struct TunnelEntry {
         var config: TunnelConfig
@@ -17,6 +18,12 @@ final class TunnelManager: ObservableObject {
         var retryCount: Int = 0
         var retryTask: Task<Void, Never>?
         var connectedSince: Date?
+        var source: TunnelSource = .config
+        /// Control host that created a dynamic tunnel.
+        var owner: ControlOwner?
+        var hint: String?
+
+        var isActive: Bool { status.isActive }
     }
 
     init(config: LarimarConfig) {
@@ -31,9 +38,11 @@ final class TunnelManager: ObservableObject {
 
     /// Reload configuration, preserving state for existing tunnels.
     /// Reconnects active tunnels whose SSH parameters changed.
+    /// Only config-sourced entries are touched; dynamic tunnels are managed
+    /// through the control socket.
     func reloadConfig(_ config: LarimarConfig) {
         let newIds = Set(config.tunnels.map(\.id))
-        let oldIds = Set(tunnelStates.keys)
+        let oldIds = Set(tunnelStates.filter { $0.value.source == .config }.keys)
 
         // Check if global sshAuthSock changed
         let authSockChanged = sshAuthSock != config.defaults.sshAuthSock
@@ -50,15 +59,14 @@ final class TunnelManager: ObservableObject {
         // Add new tunnels, update config for existing ones
         for tunnel in config.tunnels {
             if var existing = tunnelStates[tunnel.id] {
+                // Config ids cannot contain ':' so they never collide with dynamic ids
+                guard existing.source == .config else { continue }
                 let previousConfig = existing.config
                 existing.config = tunnel
                 tunnelStates[tunnel.id] = existing
 
                 // Reconnect if SSH parameters changed and tunnel is active
-                let isActive = existing.status == .connected
-                    || existing.status == .connecting
-                    || existing.status == .reconnecting
-                if isActive && (tunnel.sshParametersDiffer(from: previousConfig) || authSockChanged) {
+                if existing.isActive && (tunnel.sshParametersDiffer(from: previousConfig) || authSockChanged) {
                     disconnect(tunnelId: tunnel.id)
                     connect(tunnelId: tunnel.id)
                 }
@@ -71,6 +79,7 @@ final class TunnelManager: ObservableObject {
     // MARK: - Connect / Disconnect
 
     func connect(tunnelId: String) {
+        guard !isShuttingDown else { return }
         guard var entry = tunnelStates[tunnelId] else { return }
         guard entry.status == .stopped || entry.status == .error else { return }
 
@@ -92,6 +101,7 @@ final class TunnelManager: ObservableObject {
         entry.retryTask = nil
         entry.retryCount = 0
 
+        // The process stays tracked by ChildProcessRegistry until it exits
         if let process = entry.process, process.isRunning {
             Log.ssh.info("Disconnecting tunnel \(tunnelId, privacy: .private(mask: .hash))")
             process.terminate()
@@ -118,6 +128,12 @@ final class TunnelManager: ObservableObject {
         }
     }
 
+    /// Stop all tunnels and refuse new connections. Children are reaped by ChildProcessRegistry.
+    func shutdown() {
+        isShuttingDown = true
+        disconnectAll()
+    }
+
     /// Auto-connect tunnels that have autoConnect enabled.
     func autoConnectIfNeeded() {
         for (id, entry) in tunnelStates where entry.config.autoConnect && entry.status == .stopped {
@@ -125,22 +141,122 @@ final class TunnelManager: ObservableObject {
         }
     }
 
+    // MARK: - Dynamic Tunnels
+
+    /// Add and connect a dynamic tunnel. Returns the generated id.
+    func addDynamic(owner: ControlOwner, identity: ControlHostIdentity, request: ForwardRequest, localPort: UInt16) -> String? {
+        guard !isShuttingDown else { return nil }
+
+        var id: String
+        repeat {
+            id = "dyn:" + String(format: "%08x", UInt32.random(in: .min ... .max))
+        } while tunnelStates[id] != nil
+
+        let config = TunnelConfig(
+            id: id,
+            mode: .local,
+            localPort: localPort,
+            remotePort: request.remotePort,
+            forwardHost: request.forwardHost,
+            sshHost: identity.sshHost,
+            sshUser: identity.sshUser,
+            sshPort: identity.sshPort,
+            bindAddress: "127.0.0.1",
+            autoConnect: false,
+            autoReconnect: true,
+            app: request.app
+        )
+        tunnelStates[id] = TunnelEntry(
+            config: config,
+            status: .stopped,
+            source: .dynamic,
+            owner: owner,
+            hint: request.hint
+        )
+        Log.control.info("Dynamic tunnel created: \(id, privacy: .private(mask: .hash)) owner=\(owner.name, privacy: .private(mask: .hash))")
+        connect(tunnelId: id)
+        return id
+    }
+
+    func removeDynamic(tunnelId: String) {
+        guard tunnelStates[tunnelId]?.source == .dynamic else { return }
+        disconnect(tunnelId: tunnelId)
+        tunnelStates.removeValue(forKey: tunnelId)
+        Log.control.info("Dynamic tunnel removed: \(tunnelId, privacy: .private(mask: .hash))")
+    }
+
+    /// Remove every dynamic tunnel whose owner matches the predicate.
+    func removeDynamics(where predicate: (ControlOwner) -> Bool) {
+        let ids = tunnelStates.compactMap { id, entry -> String? in
+            guard entry.source == .dynamic, let owner = entry.owner, predicate(owner) else { return nil }
+            return id
+        }
+        for id in ids {
+            removeDynamic(tunnelId: id)
+        }
+    }
+
+    func setHint(tunnelId: String, hint: String?) {
+        guard let entry = tunnelStates[tunnelId], entry.hint != hint else { return }
+        tunnelStates[tunnelId]?.hint = hint
+    }
+
+    /// Local ports already assigned to any tunnel.
+    func allocatedLocalPorts() -> Set<UInt16> {
+        Set(tunnelStates.values.filter { $0.config.mode != .remote }.map(\.config.localPort))
+    }
+
+    func forwardCandidates() -> [ForwardCandidate] {
+        tunnelStates.values.map(Self.candidate(for:))
+    }
+
+    func forwardCandidate(id: String) -> ForwardCandidate? {
+        tunnelStates[id].map(Self.candidate(for:))
+    }
+
+    private static func candidate(for entry: TunnelEntry) -> ForwardCandidate {
+        ForwardCandidate(
+            id: entry.config.id,
+            source: entry.source,
+            mode: entry.config.mode,
+            sshHost: entry.config.sshHost,
+            sshUser: entry.config.sshUser,
+            sshPort: entry.config.sshPort,
+            forwardHost: entry.config.forwardHost,
+            remotePort: entry.config.remotePort,
+            localPort: entry.config.localPort,
+            owner: entry.owner,
+            isActive: entry.isActive
+        )
+    }
+
     // MARK: - Status
 
     func tunnelInfos() -> [TunnelInfo] {
         tunnelStates.values
-            .map { entry in
-                TunnelInfo(
-                    id: entry.config.id,
-                    status: entry.status,
-                    mode: entry.config.mode,
-                    localPort: entry.config.localPort,
-                    remotePort: entry.config.remotePort,
-                    sshHost: entry.config.sshHost,
-                    errorMessage: entry.errorMessage
-                )
-            }
+            .map(Self.info(for:))
             .sorted { $0.id < $1.id }
+    }
+
+    func tunnelInfo(id: String) -> TunnelInfo? {
+        tunnelStates[id].map(Self.info(for:))
+    }
+
+    private static func info(for entry: TunnelEntry) -> TunnelInfo {
+        TunnelInfo(
+            id: entry.config.id,
+            status: entry.status,
+            mode: entry.config.mode,
+            localPort: entry.config.localPort,
+            remotePort: entry.config.remotePort,
+            sshHost: entry.config.sshHost,
+            errorMessage: entry.errorMessage,
+            source: entry.source,
+            app: entry.config.app,
+            hint: entry.hint,
+            owner: entry.owner?.name,
+            forwardHost: entry.config.forwardHost
+        )
     }
 
     // MARK: - SSH Process
@@ -150,40 +266,25 @@ final class TunnelManager: ObservableObject {
         let config = entry.config
 
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+        process.executableURL = URL(fileURLWithPath: SSHCommand.executablePath)
+        process.arguments = SSHCommand.forwardingArguments(
+            forward: config.sshForwardArguments(),
+            sshHost: config.sshHost,
+            sshUser: config.sshUser,
+            sshPort: config.sshPort
+        )
 
-        var args = ["-N"]
+        process.environment = SSHCommand.environment(authSock: sshAuthSock)
 
-        // Port forwarding
-        args += config.sshForwardArguments()
-
-        // SSH options
-        args += ["-o", "ServerAliveInterval=15"]
-        args += ["-o", "ServerAliveCountMax=3"]
-        args += ["-o", "ExitOnForwardFailure=yes"]
-        args += ["-o", "BatchMode=yes"]
-
-        // Optional user/port from tunnel config (otherwise delegated to ~/.ssh/config)
-        if let user = config.sshUser {
-            args += ["-l", user]
-        }
-        if let port = config.sshPort {
-            args += ["-p", String(port)]
-        }
-
-        args.append(config.sshHost)
-        process.arguments = args
-
-        // Environment: inherit parent, optionally override SSH_AUTH_SOCK
-        var env = ProcessInfo.processInfo.environment
-        if let sock = sshAuthSock {
-            env["SSH_AUTH_SOCK"] = NSString(string: sock).expandingTildeInPath
-        }
-        process.environment = env
-
-        // Silence stdout/stderr
-        process.standardOutput = FileHandle.nullDevice
+        // stdout carries only the ready marker from LocalCommand
+        let stdout = Pipe()
+        process.standardOutput = stdout
         process.standardError = Pipe()
+        SSHCommand.watchReady(stdout: stdout) { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.markConnected(tunnelId: tunnelId, process: process)
+            }
+        }
 
         // Monitor process termination
         process.terminationHandler = { [weak self] proc in
@@ -194,22 +295,24 @@ final class TunnelManager: ObservableObject {
 
         do {
             try process.run()
+            ChildProcessRegistry.shared.register(process)
             Log.ssh.info("SSH spawned for \(tunnelId, privacy: .private(mask: .hash)), pid=\(process.processIdentifier)")
             tunnelStates[tunnelId]?.process = process
-            // Mark connected after a short delay to confirm the process stays alive
-            Task {
-                try? await Task.sleep(nanoseconds: 500_000_000) // 0.5s
-                if tunnelStates[tunnelId]?.process?.isRunning == true {
-                    tunnelStates[tunnelId]?.status = .connected
-                    tunnelStates[tunnelId]?.connectedSince = Date()
-                }
-            }
         } catch {
             Log.ssh.error("Failed to spawn SSH for \(tunnelId, privacy: .private(mask: .hash)): \(error, privacy: .private)")
             tunnelStates[tunnelId]?.status = .error
             tunnelStates[tunnelId]?.errorMessage = error.localizedDescription
             tunnelStates[tunnelId]?.process = nil
         }
+    }
+
+    private func markConnected(tunnelId: String, process: Process) {
+        guard let entry = tunnelStates[tunnelId], entry.process === process,
+              entry.status == .connecting, process.isRunning else { return }
+        Log.ssh.info("SSH authenticated for \(tunnelId, privacy: .private(mask: .hash))")
+        tunnelStates[tunnelId]?.status = .connected
+        tunnelStates[tunnelId]?.errorMessage = nil
+        tunnelStates[tunnelId]?.connectedSince = Date()
     }
 
     private func handleTermination(tunnelId: String, process: Process) {
@@ -224,18 +327,12 @@ final class TunnelManager: ObservableObject {
 
         let exitCode = process.terminationStatus
 
-        if entry.config.autoReconnect {
-            // Read stderr for error context
-            let errorMessage: String?
-            if let pipe = process.standardError as? Pipe {
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                let stderr = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
-                errorMessage = stderr?.isEmpty == false ? stderr : "SSH exited with code \(exitCode)"
-            } else {
-                errorMessage = "SSH exited with code \(exitCode)"
-            }
+        // Read stderr for error context
+        let stderr = (process.standardError as? Pipe)?.fileHandleForReading.readDataToEndOfFile() ?? Data()
+        let errorMessage = SSHCommand.errorMessage(stderr: stderr) ?? "SSH exited with code \(exitCode)"
 
-            Log.ssh.notice("SSH terminated for \(tunnelId, privacy: .private(mask: .hash)), exit=\(exitCode), stderr: \(errorMessage ?? "none", privacy: .private(mask: .hash)), scheduling reconnect")
+        if entry.config.autoReconnect && !isShuttingDown {
+            Log.ssh.notice("SSH terminated for \(tunnelId, privacy: .private(mask: .hash)), exit=\(exitCode), stderr: \(errorMessage, privacy: .private(mask: .hash)), scheduling reconnect")
             entry.status = .reconnecting
             entry.errorMessage = errorMessage
             tunnelStates[tunnelId] = entry
@@ -243,7 +340,7 @@ final class TunnelManager: ObservableObject {
         } else {
             Log.ssh.error("SSH terminated for \(tunnelId, privacy: .private(mask: .hash)), exit=\(exitCode), autoReconnect disabled")
             entry.status = .error
-            entry.errorMessage = "SSH exited with code \(exitCode)"
+            entry.errorMessage = errorMessage
             tunnelStates[tunnelId] = entry
         }
     }
@@ -255,16 +352,13 @@ final class TunnelManager: ObservableObject {
         guard var entry = tunnelStates[tunnelId],
               entry.status == .reconnecting else { return }
 
-        let retryCount = entry.retryCount
-        let baseDelay = min(pow(2.0, Double(retryCount)), 300.0) // max 300s
-        let jitter = baseDelay * Double.random(in: -0.25...0.25)
-        let delay = max(1.0, baseDelay + jitter)
+        let delay = ReconnectBackoff.delay(retryCount: entry.retryCount)
 
         entry.retryCount += 1
         Log.ssh.info("Scheduling reconnect for \(tunnelId, privacy: .private(mask: .hash)) in \(String(format: "%.1f", delay))s (attempt \(entry.retryCount))")
         let task = Task {
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, !isShuttingDown else { return }
             guard tunnelStates[tunnelId]?.status == .reconnecting else { return }
             tunnelStates[tunnelId]?.status = .connecting
             spawnSSH(tunnelId: tunnelId)
@@ -276,10 +370,11 @@ final class TunnelManager: ObservableObject {
     /// Reset retry counters for tunnels that have been connected long enough (60s).
     func resetStableRetryCounters() {
         let now = Date()
-        for (id, entry) in tunnelStates {
+        // Skip no-op writes: every assignment publishes and re-renders the menu
+        for (id, entry) in tunnelStates where entry.retryCount != 0 {
             if entry.status == .connected,
                let since = entry.connectedSince,
-               now.timeIntervalSince(since) > 60 {
+               now.timeIntervalSince(since) > ReconnectBackoff.stableAfter {
                 tunnelStates[id]?.retryCount = 0
             }
         }
@@ -287,6 +382,7 @@ final class TunnelManager: ObservableObject {
 
     /// Immediately retry all reconnecting tunnels (e.g., on network change).
     func retryAllReconnecting() {
+        guard !isShuttingDown else { return }
         for (id, entry) in tunnelStates where entry.status == .reconnecting {
             tunnelStates[id]?.retryTask?.cancel()
             tunnelStates[id]?.retryTask = nil

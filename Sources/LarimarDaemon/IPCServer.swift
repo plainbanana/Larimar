@@ -6,99 +6,34 @@ import OSLog
 /// Protocol: one JSON request per connection, one JSON response back, then close.
 @MainActor
 final class IPCServer {
-    var listener: Int32 = -1
-    private var listenSource: DispatchSourceRead?
+    private var listener: UnixSocketListener?
     private let tunnelManager: TunnelManager
+    private let controlConnections: ControlConnectionManager
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
-    init(tunnelManager: TunnelManager) {
+    init(tunnelManager: TunnelManager, controlConnections: ControlConnectionManager) {
         self.tunnelManager = tunnelManager
+        self.controlConnections = controlConnections
     }
 
     func start() throws {
-        let socketPath = LarimarConstants.socketPath
-
-        // Ensure parent directory exists
-        let dir = (socketPath as NSString).deletingLastPathComponent
-        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-
-        // Remove stale socket file
-        if FileManager.default.fileExists(atPath: socketPath) {
-            try FileManager.default.removeItem(atPath: socketPath)
+        let listener = UnixSocketListener(path: LarimarConstants.socketPath)
+        try listener.start { [weak self] clientFd in
+            self?.handleConnection(clientFd)
         }
-
-        // Create Unix domain socket
-        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard fd >= 0 else {
-            throw IPCError.socketCreationFailed
-        }
-
-        // Bind to socket path
-        var addr = sockaddr_un()
-        addr.sun_family = sa_family_t(AF_UNIX)
-        let pathBytes = socketPath.utf8CString
-        guard pathBytes.count <= MemoryLayout.size(ofValue: addr.sun_path) else {
-            close(fd)
-            throw IPCError.pathTooLong
-        }
-        withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
-            ptr.withMemoryRebound(to: CChar.self, capacity: pathBytes.count) { dest in
-                pathBytes.withUnsafeBufferPointer { src in
-                    _ = memcpy(dest, src.baseAddress!, src.count)
-                }
-            }
-        }
-
-        let bindResult = withUnsafePointer(to: &addr) { ptr in
-            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
-                bind(fd, sockPtr, socklen_t(MemoryLayout<sockaddr_un>.size))
-            }
-        }
-        guard bindResult == 0 else {
-            close(fd)
-            throw IPCError.bindFailed(errno)
-        }
-
-        // Set socket permissions (owner read/write only)
-        chmod(socketPath, 0o600)
-
-        // Listen
-        guard Darwin.listen(fd, 5) == 0 else {
-            close(fd)
-            throw IPCError.listenFailed(errno)
-        }
-
-        self.listener = fd
-
-        // Use GCD to accept connections
-        let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: .main)
-        source.setEventHandler { [weak self] in
-            self?.acceptConnection()
-        }
-        source.setCancelHandler {
-            close(fd)
-        }
-        self.listenSource = source
-        source.resume()
+        self.listener = listener
         Log.ipc.info("IPC server listening")
     }
 
     func stop() {
-        listenSource?.cancel()
-        listenSource = nil
-        if listener >= 0 {
-            listener = -1
-        }
-        try? FileManager.default.removeItem(atPath: LarimarConstants.socketPath)
+        listener?.stop()
+        listener = nil
     }
 
     // MARK: - Connection Handling
 
-    private func acceptConnection() {
-        let clientFd = accept(listener, nil, nil)
-        guard clientFd >= 0 else { return }
-
+    private func handleConnection(_ clientFd: Int32) {
         DispatchQueue.global().async { [weak self] in
             defer { close(clientFd) }
 
@@ -112,7 +47,7 @@ final class IPCServer {
 
             var payload = responseData
             payload.append(UInt8(ascii: "\n"))
-            Self.writeAll(fd: clientFd, data: payload)
+            SocketIO.writeAll(fd: clientFd, data: payload)
         }
     }
 
@@ -150,27 +85,6 @@ final class IPCServer {
         return buffer.isEmpty ? nil : buffer
     }
 
-    /// Write all bytes to fd, retrying on EINTR and short writes.
-    @discardableResult
-    private nonisolated static func writeAll(fd: Int32, data: Data) -> Bool {
-        var remaining = data[...]
-        while !remaining.isEmpty {
-            let n = remaining.withUnsafeBytes { ptr in
-                write(fd, ptr.baseAddress!, ptr.count)
-            }
-            if n > 0 {
-                remaining = remaining.dropFirst(n)
-            } else if n == 0 {
-                return false
-            } else if errno == EINTR {
-                continue
-            } else {
-                return false
-            }
-        }
-        return true
-    }
-
     private func processRequest(_ data: Data) -> Data {
         do {
             let request = try decoder.decode(IPCRequest.self, from: data)
@@ -185,40 +99,70 @@ final class IPCServer {
 
     private func handleCommand(_ request: IPCRequest) -> IPCResponse {
         switch request.command {
-        case .status:
-            return .ok(id: request.id, data: IPCResponseData(tunnels: tunnelManager.tunnelInfos()))
+        case .status, .list:
+            return ok(request)
 
         case .connect(let tunnelId):
             guard tunnelManager.tunnelStates[tunnelId] != nil else {
                 return .fail(id: request.id, error: "Unknown tunnel: \(tunnelId)")
             }
             tunnelManager.connect(tunnelId: tunnelId)
-            return .ok(id: request.id, data: IPCResponseData(tunnels: tunnelManager.tunnelInfos()))
+            return ok(request)
 
         case .disconnect(let tunnelId):
             guard tunnelManager.tunnelStates[tunnelId] != nil else {
                 return .fail(id: request.id, error: "Unknown tunnel: \(tunnelId)")
             }
             tunnelManager.disconnect(tunnelId: tunnelId)
-            return .ok(id: request.id, data: IPCResponseData(tunnels: tunnelManager.tunnelInfos()))
+            return ok(request)
 
         case .connectAll:
             tunnelManager.connectAll()
-            return .ok(id: request.id, data: IPCResponseData(tunnels: tunnelManager.tunnelInfos()))
+            return ok(request)
 
         case .disconnectAll:
             tunnelManager.disconnectAll()
-            return .ok(id: request.id, data: IPCResponseData(tunnels: tunnelManager.tunnelInfos()))
+            return ok(request)
 
-        case .list:
-            return .ok(id: request.id, data: IPCResponseData(tunnels: tunnelManager.tunnelInfos()))
+        case .remove(let tunnelId):
+            guard let entry = tunnelManager.tunnelStates[tunnelId] else {
+                return .fail(id: request.id, error: "Unknown tunnel: \(tunnelId)")
+            }
+            guard entry.source == .dynamic else {
+                return .fail(id: request.id, error: "Only dynamic tunnels can be removed; edit tunnels.toml for '\(tunnelId)'")
+            }
+            tunnelManager.removeDynamic(tunnelId: tunnelId)
+            return ok(request)
+
+        case .setHint(let tunnelId, let hint):
+            guard tunnelManager.tunnelStates[tunnelId] != nil else {
+                return .fail(id: request.id, error: "Unknown tunnel: \(tunnelId)")
+            }
+            switch ControlValidation.sanitizeHint(hint ?? "") {
+            case .success(let sanitized):
+                tunnelManager.setHint(tunnelId: tunnelId, hint: sanitized)
+                return ok(request)
+            case .failure(let error):
+                return .fail(id: request.id, error: error.message)
+            }
+
+        case .connectControl(let name), .disconnectControl(let name):
+            guard controlConnections.connections[name] != nil else {
+                return .fail(id: request.id, error: "Unknown control host: \(name)")
+            }
+            if case .connectControl = request.command {
+                controlConnections.connect(name: name)
+            } else {
+                controlConnections.disconnect(name: name)
+            }
+            return ok(request)
         }
     }
 
-    enum IPCError: Error {
-        case socketCreationFailed
-        case pathTooLong
-        case bindFailed(Int32)
-        case listenFailed(Int32)
+    private func ok(_ request: IPCRequest) -> IPCResponse {
+        .ok(id: request.id, data: IPCResponseData(
+            tunnels: tunnelManager.tunnelInfos(),
+            controls: controlConnections.controlInfos()
+        ))
     }
 }

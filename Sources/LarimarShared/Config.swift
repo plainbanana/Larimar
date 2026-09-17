@@ -4,11 +4,49 @@ public struct LarimarConfig: Sendable {
     public let managed: Bool
     public let defaults: DefaultsConfig
     public let tunnels: [TunnelConfig]
+    public let control: ControlConfig
 
-    public init(managed: Bool = false, defaults: DefaultsConfig, tunnels: [TunnelConfig]) {
+    public init(managed: Bool = false, defaults: DefaultsConfig, tunnels: [TunnelConfig], control: ControlConfig = ControlConfig()) {
         self.managed = managed
         self.defaults = defaults
         self.tunnels = tunnels
+        self.control = control
+    }
+}
+
+/// Settings for the control socket that lets allowed remote hosts request forwards.
+public struct ControlConfig: Sendable, Equatable {
+    public static let defaultApprovalTimeout = 120
+
+    public let enabled: Bool
+    public let approvalTimeout: Int
+    public let hosts: [ControlHost]
+
+    public init(enabled: Bool = false, approvalTimeout: Int = ControlConfig.defaultApprovalTimeout, hosts: [ControlHost] = []) {
+        self.enabled = enabled
+        self.approvalTimeout = approvalTimeout
+        self.hosts = hosts
+    }
+}
+
+/// A remote host allowed to talk to the control socket.
+public struct ControlHost: Sendable, Equatable {
+    public let name: String
+    public let sshHost: String
+    public let sshUser: String?
+    public let sshPort: UInt16?
+    public let autoConnect: Bool
+
+    public init(name: String, sshHost: String, sshUser: String? = nil, sshPort: UInt16? = nil, autoConnect: Bool = false) {
+        self.name = name
+        self.sshHost = sshHost
+        self.sshUser = sshUser
+        self.sshPort = sshPort
+        self.autoConnect = autoConnect
+    }
+
+    public var identity: ControlHostIdentity {
+        ControlHostIdentity(name: name, sshHost: sshHost, sshUser: sshUser, sshPort: sshPort)
     }
 }
 
@@ -171,6 +209,11 @@ public enum ConfigLoader {
         return try parse(content)
     }
 
+    /// ':' is reserved for runtime-generated ids (e.g. "dyn:...").
+    public static func isReservedTunnelId(_ id: String) -> Bool {
+        id.contains(":")
+    }
+
     public static func parse(_ toml: String) throws -> ConfigLoadResult {
         let table = try TOMLParser.parse(toml)
         let managed: Bool
@@ -183,6 +226,11 @@ public enum ConfigLoader {
             // Sort keys for stable warning order
             for id in tunnelsTable.keys.sorted() {
                 guard case .table(let tunnelTable) = tunnelsTable[id] else { continue }
+
+                if isReservedTunnelId(id) {
+                    warnings.append("tunnel '\(id)': ':' is not allowed in tunnel ids")
+                    continue
+                }
 
                 // Detect renamed key
                 if tunnelTable.string("remote_host") != nil {
@@ -198,6 +246,11 @@ public enum ConfigLoader {
                         warnings.append("tunnel '\(id)': invalid mode \(desc)")
                         continue
                     }
+                }
+
+                if let app = tunnelTable.string("app"), !ControlValidation.isValidApp(app) {
+                    warnings.append("tunnel '\(id)': invalid app '\(app)' (allowed: a-z 0-9 . _ -, max 32)")
+                    continue
                 }
 
                 let tunnel = parseTunnel(id: id, table: tunnelTable, defaults: defaults)
@@ -221,7 +274,54 @@ public enum ConfigLoader {
         }
 
         tunnels.sort { $0.id < $1.id }
-        return ConfigLoadResult(config: LarimarConfig(managed: managed, defaults: defaults, tunnels: tunnels), warnings: warnings)
+        let control = parseControl(table["control"], defaults: defaults, warnings: &warnings)
+        return ConfigLoadResult(
+            config: LarimarConfig(managed: managed, defaults: defaults, tunnels: tunnels, control: control),
+            warnings: warnings
+        )
+    }
+
+    private static func parseControl(_ value: TOMLParser.Value?, defaults: DefaultsConfig, warnings: inout [String]) -> ControlConfig {
+        guard case .table(let table) = value else {
+            return ControlConfig()
+        }
+
+        var approvalTimeout = ControlConfig.defaultApprovalTimeout
+        if let timeout = table.int("approval_timeout") {
+            if (10...3600).contains(timeout) {
+                approvalTimeout = timeout
+            } else {
+                warnings.append("control: approval_timeout must be between 10 and 3600, using \(approvalTimeout)")
+            }
+        }
+
+        var hosts: [ControlHost] = []
+        if case .table(let hostsTable) = table["hosts"] {
+            for name in hostsTable.keys.sorted() {
+                guard case .table(let hostTable) = hostsTable[name] else { continue }
+                guard ControlValidation.isValidHostName(name) else {
+                    warnings.append("control host '\(name)': invalid name (allowed: A-Z a-z 0-9 _ -)")
+                    continue
+                }
+                guard let sshHost = hostTable.string("ssh_host"), !sshHost.isEmpty else {
+                    warnings.append("control host '\(name)': ssh_host is missing")
+                    continue
+                }
+                hosts.append(ControlHost(
+                    name: name,
+                    sshHost: sshHost,
+                    sshUser: hostTable.string("ssh_user") ?? defaults.sshUser,
+                    sshPort: hostTable.uint16("ssh_port") ?? defaults.sshPort,
+                    autoConnect: hostTable.bool("auto_connect") ?? defaults.autoConnect
+                ))
+            }
+        }
+
+        return ControlConfig(
+            enabled: table.bool("enabled") ?? false,
+            approvalTimeout: approvalTimeout,
+            hosts: hosts
+        )
     }
 
     private static func parseDefaults(_ value: TOMLParser.Value?) -> DefaultsConfig {
@@ -257,7 +357,8 @@ public enum ConfigLoader {
             sshPort: table.uint16("ssh_port") ?? defaults.sshPort,
             bindAddress: table.string("bind_address") ?? defaults.bindAddress,
             autoConnect: table.bool("auto_connect") ?? defaults.autoConnect,
-            autoReconnect: table.bool("auto_reconnect") ?? defaults.autoReconnect
+            autoReconnect: table.bool("auto_reconnect") ?? defaults.autoReconnect,
+            app: table.string("app")
         )
     }
 }

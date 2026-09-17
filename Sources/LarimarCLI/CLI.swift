@@ -8,7 +8,7 @@ struct LarimarCLI: AsyncParsableCommand {
         commandName: "larimar",
         abstract: "CLI for Larimar SSH tunnel manager",
         version: LarimarVersion.current,
-        subcommands: [Status.self, Connect.self, Disconnect.self, List.self, Version.self]
+        subcommands: [Status.self, Connect.self, Disconnect.self, List.self, Remove.self, Hint.self, Control.self, Version.self]
     )
 }
 
@@ -20,12 +20,7 @@ struct Status: AsyncParsableCommand {
     )
 
     func run() async throws {
-        let response = try await IPCClient.send(.status)
-        guard response.success, let data = response.data else {
-            printError(response.error ?? "Unknown error")
-            throw ExitCode.failure
-        }
-        printTunnelTable(data.tunnels)
+        try await sendAndPrint(.status)
     }
 }
 
@@ -50,12 +45,7 @@ struct Connect: AsyncParsableCommand {
 
     func run() async throws {
         let command: IPCCommand = all ? .connectAll : .connect(tunnelId: tunnelId!)
-        let response = try await IPCClient.send(command)
-        guard response.success, let data = response.data else {
-            printError(response.error ?? "Unknown error")
-            throw ExitCode.failure
-        }
-        printTunnelTable(data.tunnels)
+        try await sendAndPrint(command, showControls: false)
     }
 }
 
@@ -80,12 +70,7 @@ struct Disconnect: AsyncParsableCommand {
 
     func run() async throws {
         let command: IPCCommand = all ? .disconnectAll : .disconnect(tunnelId: tunnelId!)
-        let response = try await IPCClient.send(command)
-        guard response.success, let data = response.data else {
-            printError(response.error ?? "Unknown error")
-            throw ExitCode.failure
-        }
-        printTunnelTable(data.tunnels)
+        try await sendAndPrint(command, showControls: false)
     }
 }
 
@@ -97,12 +82,86 @@ struct List: AsyncParsableCommand {
     )
 
     func run() async throws {
-        let response = try await IPCClient.send(.list)
-        guard response.success, let data = response.data else {
-            printError(response.error ?? "Unknown error")
-            throw ExitCode.failure
+        try await sendAndPrint(.list, showControls: false)
+    }
+}
+
+// MARK: - Remove
+
+struct Remove: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Remove a dynamic tunnel"
+    )
+
+    @Argument(help: "Dynamic tunnel ID (e.g. dyn:1a2b3c4d)")
+    var tunnelId: String
+
+    func run() async throws {
+        try await sendAndPrint(.remove(tunnelId: tunnelId))
+    }
+}
+
+// MARK: - Hint
+
+struct Hint: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Set or clear the hint shown for a tunnel"
+    )
+
+    @Flag(name: .long, help: "Clear the hint")
+    var clear = false
+
+    @Argument(help: "Tunnel ID")
+    var tunnelId: String
+
+    @Argument(help: "Hint text")
+    var text: String?
+
+    func validate() throws {
+        if clear == (text != nil) {
+            throw ValidationError("Provide hint text or use --clear")
         }
-        printTunnelTable(data.tunnels)
+    }
+
+    func run() async throws {
+        try await sendAndPrint(.setHint(tunnelId: tunnelId, hint: clear ? nil : text))
+    }
+}
+
+// MARK: - Control
+
+struct Control: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Manage control connections for remote forward requests",
+        subcommands: [ControlConnect.self, ControlDisconnect.self]
+    )
+}
+
+struct ControlConnect: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "connect",
+        abstract: "Connect the control connection of a host"
+    )
+
+    @Argument(help: "Control host name")
+    var name: String
+
+    func run() async throws {
+        try await sendAndPrint(.connectControl(name: name))
+    }
+}
+
+struct ControlDisconnect: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "disconnect",
+        abstract: "Disconnect the control connection of a host"
+    )
+
+    @Argument(help: "Control host name")
+    var name: String
+
+    func run() async throws {
+        try await sendAndPrint(.disconnectControl(name: name))
     }
 }
 
@@ -120,6 +179,18 @@ struct Version: ParsableCommand {
 
 // MARK: - Output Helpers
 
+private func sendAndPrint(_ command: IPCCommand, showControls: Bool = true) async throws {
+    let response = try await IPCClient.send(command)
+    guard response.success, let data = response.data else {
+        printError(response.error ?? "Unknown error")
+        throw ExitCode.failure
+    }
+    printTunnelTable(data.tunnels)
+    if showControls {
+        printControlTable(data.controls ?? [])
+    }
+}
+
 private func printTunnelTable(_ tunnels: [TunnelInfo]) {
     if tunnels.isEmpty {
         print("No tunnels configured.")
@@ -127,15 +198,6 @@ private func printTunnelTable(_ tunnels: [TunnelInfo]) {
     }
 
     for tunnel in tunnels {
-        let icon: String
-        switch tunnel.status {
-        case .connected: icon = "●"
-        case .connecting: icon = "◐"
-        case .reconnecting: icon = "◐"
-        case .stopped: icon = "○"
-        case .error: icon = "✗"
-        }
-
         let statusStr = tunnel.status.rawValue.padding(toLength: 14, withPad: " ", startingAt: 0)
         let portStr: String
         switch tunnel.mode {
@@ -146,12 +208,37 @@ private func printTunnelTable(_ tunnels: [TunnelInfo]) {
         case .dynamic:
             portStr = "-D :\(tunnel.localPort)"
         }
-        var line = "  \(icon) \(tunnel.id.padding(toLength: 20, withPad: " ", startingAt: 0)) \(statusStr) \(portStr)"
+        let sourceStr = tunnel.source.rawValue.padding(toLength: 8, withPad: " ", startingAt: 0)
+        let appStr = (tunnel.app ?? "-").padding(toLength: 10, withPad: " ", startingAt: 0)
+        var line = "  \(tunnel.status.icon) \(tunnel.id.padding(toLength: 20, withPad: " ", startingAt: 0)) \(statusStr) \(sourceStr) \(appStr) \(portStr.padding(toLength: 10, withPad: " ", startingAt: 0))"
+        if let hint = tunnel.hint {
+            line += "  \(hint)"
+        }
         if let err = tunnel.errorMessage {
-            line += "  (\(err))"
+            line += "  (\(singleLine(err)))"
         }
         print(line)
     }
+}
+
+private func printControlTable(_ controls: [ControlInfo]) {
+    guard !controls.isEmpty else { return }
+    print("\nControl:")
+    for control in controls {
+        var line = "  \(control.status.icon) \(control.name.padding(toLength: 20, withPad: " ", startingAt: 0)) \(control.status.rawValue.padding(toLength: 14, withPad: " ", startingAt: 0)) \(control.sshHost)"
+        if let err = control.errorMessage {
+            line += "  (\(singleLine(err)))"
+        }
+        print(line)
+    }
+}
+
+/// Collapse multi-line ssh stderr so each table row stays on one line.
+private func singleLine(_ text: String) -> String {
+    text.split(whereSeparator: \.isNewline)
+        .map { $0.trimmingCharacters(in: .whitespaces) }
+        .filter { !$0.isEmpty }
+        .joined(separator: " | ")
 }
 
 private func printError(_ message: String) {

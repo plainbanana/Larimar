@@ -64,6 +64,15 @@ let
             mode = "dynamic";
             local_port = 1080;
             ssh_host = "bastion";
+            app = "proxy";
+          };
+          control = {
+            enable = true;
+            approval_timeout = 60;
+            hosts.devbox = {
+              ssh_host = "devbox.example.com";
+              auto_connect = true;
+            };
           };
         };
       })
@@ -78,6 +87,9 @@ let
   hasDynamic = builtins.match ".*mode = \"dynamic\".*" toml != null;
   hasForwardHost = builtins.match ".*forward_host = \"db.internal\".*" toml != null;
   hasManaged = builtins.match ".*managed = true.*" toml != null;
+  hasApp = builtins.match ".*app = \"proxy\".*" toml != null;
+  hasControl = lib.hasInfix "[control]\napproval_timeout = 60\nenabled = true" toml;
+  hasControlHost = lib.hasInfix "[control.hosts.devbox]\nauto_connect = true\nssh_host = \"devbox.example.com\"" toml;
 
   # Check assertions pass (all assertions should have assertion = true)
   positiveAssertions = positiveEval.config.assertions;
@@ -107,9 +119,28 @@ let
   negativeAssertions = negativeEval.config.assertions;
   assertionFires = builtins.any (a: !a.assertion) negativeAssertions;
 
+  # Negative test: control host names cannot contain dots (they become TOML table keys)
+  badHostEval = lib.evalModules {
+    modules = [
+      hmStub
+      { _module.args = { inherit pkgs; }; }
+      ../nix/hm-module.nix
+      ({ ... }: {
+        config.services.larimar = {
+          enable = true;
+          package = pkgs.hello;
+          control.hosts."dev.box" = { ssh_host = "devbox"; };
+        };
+      })
+    ];
+  };
+  hostNameAssertionFires = builtins.any (a: !a.assertion) badHostEval.config.assertions;
+
   results = {
     inherit hasLocal hasRemote hasDynamic hasForwardHost hasManaged allAssertionsPass assertionFires;
-    allPassed = hasLocal && hasRemote && hasDynamic && hasForwardHost && hasManaged && allAssertionsPass && assertionFires;
+    inherit hasApp hasControl hasControlHost hostNameAssertionFires;
+    allPassed = hasLocal && hasRemote && hasDynamic && hasForwardHost && hasManaged && allAssertionsPass && assertionFires
+      && hasApp && hasControl && hasControlHost && hostNameAssertionFires;
     generatedToml = toml;
   };
 

@@ -201,7 +201,7 @@ larimar remove dyn:1a2b3c4d                 # Remove a dynamic forward
 larimar control connect devbox              # Connect/disconnect a control connection
 ```
 
-The CLI communicates with the daemon via a Unix domain socket at `~/Library/Application Support/Larimar/larimar.sock`. The daemon must be running.
+The CLI communicates with the daemon via a Unix domain socket at `~/Library/Application Support/Larimar/larimar.sock`. The daemon must be running. Every command prints a single JSON object on stdout, so the output can be piped straight into `jq` or a coding agent.
 
 ## Architecture
 

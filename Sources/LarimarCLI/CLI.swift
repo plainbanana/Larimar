@@ -2,7 +2,6 @@ import ArgumentParser
 import Foundation
 import LarimarShared
 
-@main
 struct LarimarCLI: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "larimar",
@@ -10,6 +9,34 @@ struct LarimarCLI: AsyncParsableCommand {
         version: LarimarVersion.current,
         subcommands: [Status.self, Connect.self, Disconnect.self, List.self, Remove.self, Hint.self, Control.self, Version.self]
     )
+}
+
+/// Custom entry point so that usage and validation errors are reported as JSON
+/// like every other failure. Help and `--version` keep ArgumentParser's own
+/// plain-text output, since those are read by humans.
+@main
+struct Main {
+    static func main() async {
+        do {
+            var command = try LarimarCLI.parseAsRoot()
+            if var command = command as? AsyncParsableCommand {
+                try await command.run()
+            } else {
+                try command.run()
+            }
+        } catch let exit as ExitCode {
+            // The command already printed its JSON output.
+            Foundation.exit(exit.rawValue)
+        } catch {
+            let code = LarimarCLI.exitCode(for: error)
+            guard code != .success else {
+                // Help and `--version` are requests, not failures.
+                LarimarCLI.exit(withError: error)
+            }
+            emit(.failure(LarimarCLI.message(for: error)))
+            Foundation.exit(code.rawValue)
+        }
+    }
 }
 
 // MARK: - Status
@@ -45,7 +72,7 @@ struct Connect: AsyncParsableCommand {
 
     func run() async throws {
         let command: IPCCommand = all ? .connectAll : .connect(tunnelId: tunnelId!)
-        try await sendAndPrint(command, showControls: false)
+        try await sendAndPrint(command)
     }
 }
 
@@ -70,7 +97,7 @@ struct Disconnect: AsyncParsableCommand {
 
     func run() async throws {
         let command: IPCCommand = all ? .disconnectAll : .disconnect(tunnelId: tunnelId!)
-        try await sendAndPrint(command, showControls: false)
+        try await sendAndPrint(command)
     }
 }
 
@@ -82,7 +109,7 @@ struct List: AsyncParsableCommand {
     )
 
     func run() async throws {
-        try await sendAndPrint(.list, showControls: false)
+        try await sendAndPrint(.list)
     }
 }
 
@@ -173,74 +200,49 @@ struct Version: ParsableCommand {
     )
 
     func run() {
-        print(LarimarVersion.current)
+        emit(CLIOutput(version: LarimarVersion.current))
     }
 }
 
-// MARK: - Output Helpers
+// MARK: - Output
 
-private func sendAndPrint(_ command: IPCCommand, showControls: Bool = true) async throws {
-    let response = try await IPCClient.send(command)
-    guard response.success, let data = response.data else {
-        printError(response.error ?? "Unknown error")
+/// The CLI is consumed by scripts and coding agents, so every command prints a
+/// single JSON object on stdout. Failures print `{"success": false, "error": ...}`
+/// and exit non-zero.
+private struct CLIOutput: Encodable {
+    var success = true
+    var tunnels: [TunnelInfo]?
+    var controls: [ControlInfo]?
+    var version: String?
+    var error: String?
+
+    static func failure(_ error: String) -> CLIOutput {
+        CLIOutput(success: false, error: error)
+    }
+}
+
+private func sendAndPrint(_ command: IPCCommand) async throws {
+    let response: IPCResponse
+    do {
+        response = try await IPCClient.send(command)
+    } catch {
+        emit(.failure(String(describing: error)))
         throw ExitCode.failure
     }
-    printTunnelTable(data.tunnels)
-    if showControls {
-        printControlTable(data.controls ?? [])
+
+    guard response.success, let data = response.data else {
+        emit(.failure(response.error ?? "Unknown error"))
+        throw ExitCode.failure
     }
+    emit(CLIOutput(tunnels: data.tunnels, controls: data.controls))
 }
 
-private func printTunnelTable(_ tunnels: [TunnelInfo]) {
-    if tunnels.isEmpty {
-        print("No tunnels configured.")
+private func emit(_ output: CLIOutput) {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+    guard let data = try? encoder.encode(output), let json = String(data: data, encoding: .utf8) else {
+        print(#"{"success": false, "error": "Failed to encode response"}"#)
         return
     }
-
-    for tunnel in tunnels {
-        let statusStr = tunnel.status.rawValue.padding(toLength: 14, withPad: " ", startingAt: 0)
-        let portStr: String
-        switch tunnel.mode {
-        case .local:
-            portStr = "-L :\(tunnel.localPort)"
-        case .remote:
-            portStr = "-R :\(tunnel.remotePort)"
-        case .dynamic:
-            portStr = "-D :\(tunnel.localPort)"
-        }
-        let sourceStr = tunnel.source.rawValue.padding(toLength: 8, withPad: " ", startingAt: 0)
-        let appStr = (tunnel.app ?? "-").padding(toLength: 10, withPad: " ", startingAt: 0)
-        var line = "  \(tunnel.status.icon) \(tunnel.id.padding(toLength: 20, withPad: " ", startingAt: 0)) \(statusStr) \(sourceStr) \(appStr) \(portStr.padding(toLength: 10, withPad: " ", startingAt: 0))"
-        if let hint = tunnel.hint {
-            line += "  \(hint)"
-        }
-        if let err = tunnel.errorMessage {
-            line += "  (\(singleLine(err)))"
-        }
-        print(line)
-    }
-}
-
-private func printControlTable(_ controls: [ControlInfo]) {
-    guard !controls.isEmpty else { return }
-    print("\nControl:")
-    for control in controls {
-        var line = "  \(control.status.icon) \(control.name.padding(toLength: 20, withPad: " ", startingAt: 0)) \(control.status.rawValue.padding(toLength: 14, withPad: " ", startingAt: 0)) \(control.sshHost)"
-        if let err = control.errorMessage {
-            line += "  (\(singleLine(err)))"
-        }
-        print(line)
-    }
-}
-
-/// Collapse multi-line ssh stderr so each table row stays on one line.
-private func singleLine(_ text: String) -> String {
-    text.split(whereSeparator: \.isNewline)
-        .map { $0.trimmingCharacters(in: .whitespaces) }
-        .filter { !$0.isEmpty }
-        .joined(separator: " | ")
-}
-
-private func printError(_ message: String) {
-    FileHandle.standardError.write(Data("Error: \(message)\n".utf8))
+    print(json)
 }

@@ -11,10 +11,13 @@ struct LarimarCLI: AsyncParsableCommand {
     )
 }
 
+/// Flags whose output is already in its final form: a shell completion script
+/// to be sourced, and ArgumentParser's own JSON dump of the command tree.
+private let passThroughFlags = ["--generate-completion-script", "--experimental-dump-help"]
+
 /// Custom entry point so that everything ArgumentParser itself prints — help,
 /// `--version`, usage and validation errors — comes out as JSON like the rest
-/// of the CLI. The only exception is `--generate-completion-script`, whose
-/// output is shell code meant to be sourced.
+/// of the CLI.
 @main
 struct Main {
     static func main() async {
@@ -33,12 +36,12 @@ struct Main {
             guard code != .success else {
                 // Help, `--version` and completion scripts are requests, not failures.
                 let text = LarimarCLI.fullMessage(for: error)
-                if CommandLine.arguments.contains("--generate-completion-script") {
+                if CommandLine.arguments.contains(where: passThroughFlags.contains) {
                     LarimarCLI.exit(withError: error)
                 } else if text == LarimarVersion.current {
                     emit(CLIOutput(version: text))
                 } else {
-                    emit(CLIOutput(help: text))
+                    emit(CLIOutput(help: HelpParser.parse(text)))
                 }
                 Foundation.exit(0)
             }
@@ -305,7 +308,7 @@ private struct CLIOutput: Encodable {
     var controls: [ControlInfo]?
     var removed: String?
     var version: String?
-    var help: String?
+    var help: HelpInfo?
     var error: String?
 
     static func failure(_ error: String) -> CLIOutput {

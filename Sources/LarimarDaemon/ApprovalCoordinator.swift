@@ -25,6 +25,7 @@ enum ApprovalDecision: Equatable {
     case resolved(ApprovalOutcome)
     case deniedRecently
     case limitExceeded
+    case rateLimited
 }
 
 /// Observes a client connection so a waiter can be dropped when the client goes away.
@@ -80,6 +81,9 @@ final class ApprovalCoordinator: ObservableObject {
         case .limitExceeded:
             Log.control.notice("Approval rejected: too many pending requests")
             return .limitExceeded
+        case .rateLimited:
+            Log.control.notice("Approval rejected: too many prompts recently")
+            return .rateLimited
         case .joined(let id):
             pendingId = id
         case .created(let id):
@@ -234,14 +238,18 @@ final class ApprovalPanelController: NSObject, NSWindowDelegate {
         panel.title = "Larimar: Forward Request"
         panel.level = .floating
         panel.isReleasedWhenClosed = false
+        // Stay visible while the user works in another app; the request may
+        // arrive at any time and must not vanish when Larimar loses focus.
+        panel.hidesOnDeactivate = false
         panel.delegate = self
         panel.contentView = NSHostingView(rootView: ApprovalView(details: details, onAllow: onAllow, onDeny: onDeny))
         panel.center()
     }
 
+    /// Show the panel without activating Larimar: a remote host must not be able
+    /// to steal the keyboard focus from whatever the user is doing.
     func show() {
-        NSApp.activate(ignoringOtherApps: true)
-        panel.makeKeyAndOrderFront(nil)
+        panel.orderFrontRegardless()
     }
 
     func close() {
@@ -261,6 +269,11 @@ private struct ApprovalView: View {
     let onAllow: () -> Void
     let onDeny: () -> Void
 
+    /// Allow stays disabled briefly after the panel appears so a click or key
+    /// press meant for another window cannot approve a request by accident.
+    @State private var allowArmed = false
+    static let allowDelay: Duration = .seconds(1)
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("A remote host requests a new port forward.")
@@ -279,10 +292,15 @@ private struct ApprovalView: View {
                 Button("Deny", role: .cancel, action: onDeny)
                     .keyboardShortcut(.cancelAction)
                 Button("Allow", action: onAllow)
+                    .disabled(!allowArmed)
             }
         }
         .padding(20)
         .frame(width: 420)
+        .task {
+            try? await Task.sleep(for: Self.allowDelay)
+            allowArmed = true
+        }
     }
 
     private func row(_ label: String, _ value: String) -> some View {

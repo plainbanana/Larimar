@@ -144,17 +144,33 @@ final class UnixSocketListener {
 }
 
 enum SocketIO {
-    /// Write all bytes to fd, retrying on EINTR and short writes.
+    /// Write all bytes to fd, retrying on EINTR and short writes, and give up
+    /// once `timeout` has passed so a peer that stops reading cannot hold the
+    /// connection (and its slot) forever. Leaves the fd non-blocking.
     @discardableResult
-    static func writeAll(fd: Int32, data: Data) -> Bool {
+    static func writeAll(fd: Int32, data: Data, timeout: TimeInterval = 5) -> Bool {
+        let flags = fcntl(fd, F_GETFL)
+        guard flags >= 0, fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0 else { return false }
+
+        let deadline = Date().addingTimeInterval(timeout)
         var remaining = data[...]
         while !remaining.isEmpty {
             let n = remaining.withUnsafeBytes { write(fd, $0.baseAddress!, $0.count) }
             if n > 0 {
                 remaining = remaining.dropFirst(n)
-            } else if n < 0 && errno == EINTR {
                 continue
-            } else {
+            }
+            guard n < 0 else { return false }
+            switch errno {
+            case EINTR:
+                continue
+            case EAGAIN:
+                let ms = deadline.timeIntervalSinceNow * 1000
+                guard ms > 0 else { return false }
+                var pfd = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
+                let ready = poll(&pfd, 1, Int32(ms))
+                if ready == 0 || (ready < 0 && errno != EINTR) { return false }
+            default:
                 return false
             }
         }

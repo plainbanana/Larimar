@@ -38,6 +38,8 @@ public enum ApprovalSubmitResult: Sendable, Equatable {
     case joined(UUID)
     case deniedRecently
     case limitExceeded
+    /// The owner was shown too many new prompts recently.
+    case rateLimited
 }
 
 /// A recent denial that makes identical requests fail immediately until it expires or is cleared.
@@ -52,12 +54,23 @@ public struct RecentDenial: Sendable, Equatable {
 public struct ApprovalRegistry: Sendable {
     public private(set) var pending: [UUID: PendingApproval] = [:]
     private var denials: [ApprovalKey: RecentDenial] = [:]
+    /// When each owner was last shown a new prompt, newest last.
+    private var promptTimes: [ControlOwner: [Date]] = [:]
     public let maxPendingPerOwner: Int
     public let denyCacheDuration: TimeInterval
+    public let maxPromptsPerWindow: Int
+    public let promptWindow: TimeInterval
 
-    public init(maxPendingPerOwner: Int = 3, denyCacheDuration: TimeInterval = 60) {
+    public init(
+        maxPendingPerOwner: Int = 3,
+        denyCacheDuration: TimeInterval = 60,
+        maxPromptsPerWindow: Int = 6,
+        promptWindow: TimeInterval = 300
+    ) {
         self.maxPendingPerOwner = maxPendingPerOwner
         self.denyCacheDuration = denyCacheDuration
+        self.maxPromptsPerWindow = maxPromptsPerWindow
+        self.promptWindow = promptWindow
     }
 
     public mutating func submit(key: ApprovalKey, hint: String?, waiter: UUID, now: Date) -> ApprovalSubmitResult {
@@ -77,6 +90,15 @@ public struct ApprovalRegistry: Sendable {
         guard ownerCount < maxPendingPerOwner else {
             return .limitExceeded
         }
+
+        // Every new prompt counts, whatever became of it: a client that disconnects
+        // (or varies the request) must not be able to pop up panels without limit.
+        let recentPrompts = (promptTimes[key.owner] ?? []).filter { now.timeIntervalSince($0) < promptWindow }
+        guard recentPrompts.count < maxPromptsPerWindow else {
+            promptTimes[key.owner] = recentPrompts
+            return .rateLimited
+        }
+        promptTimes[key.owner] = recentPrompts + [now]
 
         let id = UUID()
         pending[id] = PendingApproval(id: id, key: key, hint: hint, waiters: [waiter], createdAt: now)

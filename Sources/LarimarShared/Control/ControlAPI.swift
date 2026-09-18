@@ -74,6 +74,7 @@ public struct ControlAPIError: Error, Sendable, Equatable {
     public static let recentlyDenied = ControlAPIError(status: 403, code: "recently_denied", message: "the same request was denied recently; clear it from Recently Denied in the Larimar menu to ask again")
     public static let approvalTimeout = ControlAPIError(status: 408, code: "approval_timeout", message: "the request was not approved in time")
     public static let tooManyPending = ControlAPIError(status: 429, code: "too_many_pending", message: "too many pending approval requests")
+    public static let rateLimited = ControlAPIError(status: 429, code: "rate_limited", message: "too many approval prompts were shown recently; try again later")
     public static let cancelled = ControlAPIError(status: 503, code: "cancelled", message: "the request was cancelled")
     public static let noLocalPort = ControlAPIError(status: 503, code: "no_local_port", message: "no free local port available")
     public static let shuttingDown = ControlAPIError(status: 503, code: "shutting_down", message: "Larimar is shutting down")
@@ -234,13 +235,40 @@ public struct HealthView: Codable, Sendable, Equatable {
     }
 }
 
+/// Stable error codes reported to remote hosts. The raw ssh output stays on the
+/// Mac (menu, CLI, logs): it can name local files such as ~/.ssh/known_hosts.
+public enum ForwardErrorCode: String, Codable, Sendable {
+    case hostKeyMismatch = "host_key_mismatch"
+    case authFailed = "auth_failed"
+    case forwardFailed = "forward_failed"
+    case connectFailed = "connect_failed"
+    case sshFailed = "ssh_failed"
+
+    private static let patterns: [(ForwardErrorCode, [String])] = [
+        // The message keeps only the tail of ssh's output, so the WARNING banner may be gone
+        (.hostKeyMismatch, ["host key verification failed", "identification has changed", "host key", "offending key", "known_hosts"]),
+        (.authFailed, ["permission denied", "authentication", "too many authentication failures"]),
+        (.forwardFailed, ["forwarding failed", "cannot listen", "address already in use", "bind:", "forward"]),
+        (.connectFailed, [
+            "could not resolve", "connection refused", "timed out", "no route to host",
+            "network is unreachable", "connection reset", "connection closed", "broken pipe", "kex_exchange_identification",
+        ]),
+    ]
+
+    /// Classify an ssh error message; anything unrecognized is `sshFailed`.
+    public init(message: String) {
+        let text = message.lowercased()
+        self = Self.patterns.first { _, needles in needles.contains { text.contains($0) } }?.0 ?? .sshFailed
+    }
+}
+
 public struct ForwardView: Codable, Sendable, Equatable {
     public let id: String
     public let source: TunnelSource
     public let app: String?
     public let hint: String?
     public let status: TunnelStatus
-    public let error: String?
+    public let error: ForwardErrorCode?
     public let remotePort: UInt16
     public let forwardHost: String
     public let localPort: UInt16
@@ -260,7 +288,7 @@ public struct ForwardView: Codable, Sendable, Equatable {
         self.app = info.app
         self.hint = info.hint
         self.status = info.status
-        self.error = info.errorMessage
+        self.error = info.errorMessage.map(ForwardErrorCode.init(message:))
         self.remotePort = info.remotePort
         self.forwardHost = info.forwardHost
         self.localPort = info.localPort

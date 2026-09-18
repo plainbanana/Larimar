@@ -142,7 +142,9 @@ The Mac socket a request arrives on tells Larimar which host sent it. If the sam
 ### Security model
 
 - There is no authentication token. Access is limited by file permissions instead: on the remote host only the same user (and root) can reach `~/.larimar/control.sock`, and on the Mac only your user can reach the Mac-side socket. The mode of the remote socket itself is decided by sshd's `StreamLocalBindMask` (default `0177`); the 0700 directory is the main boundary.
-- Any process running as your user on an allowed remote host, including LLM agents, can list its forwards, set hints, and request new forwards. **Creating a new forward always requires your approval** in a Larimar dialog (or from the menu). The same request is rejected for 60 seconds after you deny it (`403 recently_denied`); clear it from *Recently Denied* in the menu to be asked again. At most 3 approvals can be pending per host.
+- Any process running as your user on an allowed remote host, including LLM agents, can list its forwards, set hints, and request new forwards. **Creating a new forward always requires your approval** in a Larimar dialog (or from the menu). The same request is rejected for 60 seconds after you deny it (`403 recently_denied`); clear it from *Recently Denied* in the menu to be asked again. At most 3 approvals can be pending per host, and a host is shown at most 6 new prompts per 5 minutes (`429 rate_limited`), whatever became of the earlier ones.
+- The approval dialog never takes the keyboard focus away from the app you are using, and its *Allow* button is disabled for the first second, so a remote host cannot get a request approved by popping the dialog up under a click or key press.
+- The remote host sees only a stable error code for a failed forward (`host_key_mismatch`, `auth_failed`, `forward_failed`, `connect_failed`, `ssh_failed`); the raw ssh output, which can name files on the Mac, is shown in the menu and the CLI only.
 - A request that matches an existing `local` tunnel from `tunnels.toml` through the same SSH host/user/port is treated as already approved: its hint is updated and it is connected if stopped.
 - A host only sees its own dynamic forwards and the configured `local` tunnels that use its SSH identity. Removing a host from the configuration, or changing its `ssh_host`/`ssh_user`/`ssh_port`, removes its dynamic forwards and pending requests.
 - Dynamic forwards bind to `127.0.0.1` on the Mac and live in memory only; they disappear when Larimar quits.
@@ -164,8 +166,8 @@ All requests go to `http://larimar/v1/...` over the Unix socket. Request bodies 
 `POST /v1/forwards` responds with:
 
 - `200` when an existing forward already covers the request (the hint is updated)
-- `201` when a new forward was approved and created; the status is `connecting` at that point, so poll `GET /v1/forwards/{id}` for `status` and `error`. `connected` means ssh has authenticated, not that the remote port is reachable
-- `403` denied (`denied`, or `recently_denied` within 60 seconds of a denial), `408` not approved in time, `409` the requested `local_port` is in use or differs from an existing forward, `429` too many pending requests
+- `201` when a new forward was approved and created; the status is `connecting` at that point, so poll `GET /v1/forwards/{id}` for `status` and `error` (an error code such as `auth_failed`, see above). `connected` means ssh has authenticated, not that the remote port is reachable
+- `403` denied (`denied`, or `recently_denied` within 60 seconds of a denial), `408` not approved in time, `409` the requested `local_port` is in use or differs from an existing forward, `429` too many pending requests (`too_many_pending`) or too many prompts recently (`rate_limited`)
 
 If `local_port` is omitted, Larimar uses the same number as `remote_port` when it is free on the Mac, otherwise any free port. The response contains `local_url`.
 

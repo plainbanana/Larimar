@@ -918,6 +918,45 @@ test("approvalDenyCache") {
     guard case .created = other.submit(key: key, hint: nil, waiter: UUID(), now: now) else { throw TestError("timeout must not be cached") }
 }
 
+test("approvalPromptRateLimit") {
+    var registry = ApprovalRegistry(maxPendingPerOwner: 10, denyCacheDuration: 60, maxPromptsPerWindow: 2, promptWindow: 100)
+    let now = Date()
+    func request(_ port: UInt16) -> ApprovalKey { ApprovalKey(owner: owner1, request: ForwardRequest(app: "someapp", remotePort: port)) }
+
+    // A client that disconnects (cancelling the prompt) still used up a prompt
+    guard case .created(let id) = registry.submit(key: request(1), hint: nil, waiter: UUID(), now: now) else { throw TestError("created") }
+    _ = registry.cancel { $0.id == id }
+    guard case .created = registry.submit(key: request(2), hint: nil, waiter: UUID(), now: now) else { throw TestError("created") }
+    expect(registry.submit(key: request(3), hint: nil, waiter: UUID(), now: now.addingTimeInterval(50)), .rateLimited)
+    // Joining an existing prompt is not a new prompt
+    guard case .joined = registry.submit(key: request(2), hint: nil, waiter: UUID(), now: now.addingTimeInterval(50)) else { throw TestError("joined") }
+    // Other owners have their own budget
+    let other = ControlOwner(name: "other", generation: 3)
+    guard case .created = registry.submit(key: ApprovalKey(owner: other, request: ForwardRequest(app: "a", remotePort: 1)), hint: nil, waiter: UUID(), now: now) else {
+        throw TestError("expected created for other owner")
+    }
+    // The window slides
+    guard case .created = registry.submit(key: request(3), hint: nil, waiter: UUID(), now: now.addingTimeInterval(101)) else { throw TestError("window should expire") }
+}
+
+test("forwardErrorCodes") {
+    expect(ForwardErrorCode(message: "Host key verification failed."), .hostKeyMismatch)
+    expect(ForwardErrorCode(message: "@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @\nOffending key in /Users/u/.ssh/known_hosts:3"), .hostKeyMismatch)
+    expect(ForwardErrorCode(message: "u@devbox: Permission denied (publickey)."), .authFailed)
+    expect(ForwardErrorCode(message: "Error: remote port forwarding failed for listen port 4980"), .forwardFailed)
+    expect(ForwardErrorCode(message: "bind [127.0.0.1]:4980: Address already in use"), .forwardFailed)
+    expect(ForwardErrorCode(message: "ssh: Could not resolve hostname devbox: nodename nor servname provided"), .connectFailed)
+    expect(ForwardErrorCode(message: "ssh: connect to host devbox port 22: Connection refused"), .connectFailed)
+    expect(ForwardErrorCode(message: "SSH exited with code 255"), .sshFailed)
+    expect(ForwardErrorCode(message: "Failed to run ssh: launch path not accessible"), .sshFailed)
+    // The view carries the code, never the raw text
+    let info = TunnelInfo(id: "t", status: .error, mode: .local, localPort: 1, remotePort: 2, sshHost: "h",
+                          errorMessage: "Offending key in /Users/u/.ssh/known_hosts:3")
+    let json = String(data: (try? JSONEncoder().encode(ForwardView(info: info))) ?? Data(), encoding: .utf8) ?? ""
+    expect(json.contains("host_key_mismatch"), true)
+    expect(json.contains("known_hosts"), false)
+}
+
 test("approvalDenialListingAndClearing") {
     var registry = ApprovalRegistry(maxPendingPerOwner: 3, denyCacheDuration: 60)
     let now = Date()

@@ -287,6 +287,8 @@ final class ControlServer {
             throw ControlAPIError.cancelled
         case .limitExceeded:
             throw ControlAPIError.tooManyPending
+        case .rateLimited:
+            throw ControlAPIError.rateLimited
         }
 
         // Re-validate: the host may have been revoked or the forward created meanwhile

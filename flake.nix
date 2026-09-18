@@ -16,6 +16,36 @@
         rev = "626b5b7b2f45e1b0b1c6f4a309296d1d21d7311b";
         hash = "sha256-90ECc3iEmxvOUk9iLKbQdQEz88dOisPqWsJLOFcKUV8=";
       };
+
+      # SwiftPM 5.10 workspace state pointing at the pre-fetched checkout
+      workspace-state = pkgs.writeText "workspace-state.json" ''
+        {
+          "version": 1,
+          "object": {
+            "dependencies": [
+              {
+                "basedOn": null,
+                "packageRef": {
+                  "identity": "swift-argument-parser",
+                  "kind": "remote",
+                  "location": "https://github.com/apple/swift-argument-parser.git",
+                  "name": "swift-argument-parser"
+                },
+                "state": {
+                  "checkoutState": {
+                    "revision": "626b5b7b2f45e1b0b1c6f4a309296d1d21d7311b",
+                    "version": "1.7.1"
+                  },
+                  "name": "checkout"
+                },
+                "subpath": "swift-argument-parser"
+              }
+            ],
+            "artifacts": [],
+            "repositoryMap": {}
+          }
+        }
+      '';
     in
     {
       packages.${system}.default = pkgs.swiftPackages.stdenv.mkDerivation {
@@ -49,34 +79,7 @@
           chmod -R u+w .build/checkouts
 
           # workspace-state.json for SwiftPM 5.10 (kind: "remote")
-          cat > .build/workspace-state.json << 'EOF'
-          {
-            "version": 1,
-            "object": {
-              "dependencies": [
-                {
-                  "basedOn": null,
-                  "packageRef": {
-                    "identity": "swift-argument-parser",
-                    "kind": "remote",
-                    "location": "https://github.com/apple/swift-argument-parser.git",
-                    "name": "swift-argument-parser"
-                  },
-                  "state": {
-                    "checkoutState": {
-                      "revision": "626b5b7b2f45e1b0b1c6f4a309296d1d21d7311b",
-                      "version": "1.7.1"
-                    },
-                    "name": "checkout"
-                  },
-                  "subpath": "swift-argument-parser"
-                }
-              ],
-              "artifacts": [],
-              "repositoryMap": {}
-            }
-          }
-          EOF
+          install -m 644 ${workspace-state} .build/workspace-state.json
         '';
 
         buildPhase = ''

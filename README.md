@@ -192,7 +192,7 @@ The menu shows *Pending Approvals*, *Recently Denied* requests, *Configured* tun
 ```bash
 larimar status              # Show all tunnel statuses
 larimar list                # List configured tunnels
-larimar connect my-service  # Connect a specific tunnel
+larimar connect my-service  # Connect a tunnel and wait until it is established
 larimar disconnect my-service
 larimar connect --all       # Connect all tunnels
 larimar disconnect --all    # Disconnect all tunnels
@@ -202,6 +202,8 @@ larimar control connect devbox              # Connect/disconnect a control conne
 ```
 
 The CLI communicates with the daemon via a Unix domain socket at `~/Library/Application Support/Larimar/larimar.sock`. The daemon must be running. Every command prints a single JSON object on stdout, so the output can be piped straight into `jq` or a coding agent.
+
+`connect` blocks until the tunnel is connected — which includes waiting for an SSH agent prompt such as TouchID — and fails if it does not come up within `--timeout` seconds (default 60). Pass `--no-wait` to return as soon as the connection is requested.
 
 ## Architecture
 

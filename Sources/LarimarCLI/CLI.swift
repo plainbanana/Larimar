@@ -11,9 +11,10 @@ struct LarimarCLI: AsyncParsableCommand {
     )
 }
 
-/// Custom entry point so that usage and validation errors are reported as JSON
-/// like every other failure. Help and `--version` keep ArgumentParser's own
-/// plain-text output, since those are read by humans.
+/// Custom entry point so that everything ArgumentParser itself prints — help,
+/// `--version`, usage and validation errors — comes out as JSON like the rest
+/// of the CLI. The only exception is `--generate-completion-script`, whose
+/// output is shell code meant to be sourced.
 @main
 struct Main {
     static func main() async {
@@ -30,8 +31,16 @@ struct Main {
         } catch {
             let code = LarimarCLI.exitCode(for: error)
             guard code != .success else {
-                // Help and `--version` are requests, not failures.
-                LarimarCLI.exit(withError: error)
+                // Help, `--version` and completion scripts are requests, not failures.
+                let text = LarimarCLI.fullMessage(for: error)
+                if CommandLine.arguments.contains("--generate-completion-script") {
+                    LarimarCLI.exit(withError: error)
+                } else if text == LarimarVersion.current {
+                    emit(CLIOutput(version: text))
+                } else {
+                    emit(CLIOutput(help: text))
+                }
+                Foundation.exit(0)
             }
             emit(.failure(LarimarCLI.message(for: error)))
             Foundation.exit(code.rawValue)
@@ -61,6 +70,12 @@ struct Connect: AsyncParsableCommand {
     @Flag(name: .long, help: "Connect all tunnels")
     var all = false
 
+    @Flag(name: .long, help: "Return as soon as the connection is requested")
+    var noWait = false
+
+    @Option(name: .long, help: "Seconds to wait for the connection to be established")
+    var timeout: Double = 60
+
     @Argument(help: "Tunnel ID to connect")
     var tunnelId: String?
 
@@ -68,12 +83,77 @@ struct Connect: AsyncParsableCommand {
         if !all && tunnelId == nil {
             throw ValidationError("Provide a tunnel ID or use --all")
         }
+        if timeout <= 0 {
+            throw ValidationError("--timeout must be greater than 0")
+        }
     }
 
     func run() async throws {
         let command: IPCCommand = all ? .connectAll : .connect(tunnelId: tunnelId!)
-        try await sendAndPrint(command)
+        let data = try await request(command)
+        guard !noWait else {
+            emit(CLIOutput(tunnels: data.tunnels, controls: data.controls))
+            return
+        }
+        try await waitUntilSettled(
+            tunnelIds: data.tunnels.filter { $0.status.isActive }.map(\.id),
+            timeout: timeout
+        )
     }
+}
+
+/// Polls the daemon until every requested tunnel has left `connecting`.
+///
+/// A tunnel that fails to connect ends up in `error`, or in `reconnecting` when
+/// auto-reconnect keeps retrying in the background; both count as settled, so
+/// the command reports the failure instead of blocking until the timeout.
+private func waitUntilSettled(tunnelIds: [String], timeout: Double) async throws {
+    let pollInterval = Duration.milliseconds(250)
+    let deadline = ContinuousClock.now + .seconds(timeout)
+    let waitingFor = Set(tunnelIds)
+
+    while true {
+        let data = try await request(.status)
+        let pending = data.tunnels.filter { waitingFor.contains($0.id) && $0.status == .connecting }
+        if pending.isEmpty {
+            let failed = data.tunnels.filter { waitingFor.contains($0.id) && $0.status != .connected }
+            guard failed.isEmpty else {
+                emit(CLIOutput(
+                    success: false,
+                    tunnels: data.tunnels,
+                    controls: data.controls,
+                    error: "Failed to connect: " + failed.map { describeFailure($0) }.joined(separator: ", ")
+                ))
+                throw ExitCode.failure
+            }
+            emit(CLIOutput(tunnels: data.tunnels, controls: data.controls))
+            return
+        }
+
+        guard ContinuousClock.now < deadline else {
+            emit(CLIOutput(
+                success: false,
+                tunnels: data.tunnels,
+                controls: data.controls,
+                error: "Timed out after \(Int(timeout))s waiting for: " + pending.map(\.id).joined(separator: ", ")
+            ))
+            throw ExitCode.failure
+        }
+        try await Task.sleep(for: pollInterval)
+    }
+}
+
+private func describeFailure(_ tunnel: TunnelInfo) -> String {
+    guard let message = tunnel.errorMessage else { return "\(tunnel.id) (\(tunnel.status.rawValue))" }
+    return "\(tunnel.id) (\(tunnel.status.rawValue): \(singleLine(message)))"
+}
+
+/// Collapse multi-line ssh stderr so an error message stays on one line.
+private func singleLine(_ text: String) -> String {
+    text.split(whereSeparator: \.isNewline)
+        .map { $0.trimmingCharacters(in: .whitespaces) }
+        .filter { !$0.isEmpty }
+        .joined(separator: " | ")
 }
 
 // MARK: - Disconnect
@@ -214,6 +294,7 @@ private struct CLIOutput: Encodable {
     var tunnels: [TunnelInfo]?
     var controls: [ControlInfo]?
     var version: String?
+    var help: String?
     var error: String?
 
     static func failure(_ error: String) -> CLIOutput {
@@ -222,6 +303,12 @@ private struct CLIOutput: Encodable {
 }
 
 private func sendAndPrint(_ command: IPCCommand) async throws {
+    let data = try await request(command)
+    emit(CLIOutput(tunnels: data.tunnels, controls: data.controls))
+}
+
+/// Sends a command to the daemon, reporting any failure as JSON and exiting.
+private func request(_ command: IPCCommand) async throws -> IPCResponseData {
     let response: IPCResponse
     do {
         response = try await IPCClient.send(command)
@@ -234,7 +321,7 @@ private func sendAndPrint(_ command: IPCCommand) async throws {
         emit(.failure(response.error ?? "Unknown error"))
         throw ExitCode.failure
     }
-    emit(CLIOutput(tunnels: data.tunnels, controls: data.controls))
+    return data
 }
 
 private func emit(_ output: CLIOutput) {

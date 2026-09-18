@@ -17,8 +17,13 @@ larimar status
 ```
 
 ### Connect a specific tunnel
+
+Waits until the tunnel is connected (up to `--timeout` seconds, default 60). This can take a while when the SSH agent asks for TouchID.
+
 ```bash
 larimar connect <tunnel-id>
+larimar connect <tunnel-id> --timeout 120
+larimar connect <tunnel-id> --no-wait   # Return as soon as the connection is requested
 ```
 
 ### Disconnect a specific tunnel
@@ -70,6 +75,7 @@ curl -s --unix-socket "$S" -X DELETE http://larimar/v1/forwards/<id>
 ## Usage Notes
 
 - Every `larimar` command prints a single JSON object on stdout: `{"success": true, "tunnels": [...], "controls": [...]}` on success, `{"success": false, "error": "..."}` with a non-zero exit code on failure. Parse it instead of matching on text.
+- `connect` exits non-zero when the tunnel does not reach `connected`, so a successful exit means the port is ready to use.
 - Every command returns the full tunnel list, so `larimar connect <id>` already shows the resulting state — no follow-up `larimar status` needed.
 - The Larimar daemon (menu bar app) must be running for these commands to work.
 - Tunnel IDs are defined in `~/.config/larimar/tunnels.toml`.

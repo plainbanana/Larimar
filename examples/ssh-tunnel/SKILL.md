@@ -75,9 +75,9 @@ curl -s --unix-socket "$S" -X DELETE http://larimar/v1/forwards/<id>
 ## Usage Notes
 
 - Every `larimar` command prints a single JSON object on stdout: `{"success": true, "tunnels": [...], "controls": [...]}` on success, `{"success": false, "error": "..."}` with a non-zero exit code on failure. Parse it instead of matching on text.
-- `connect` exits non-zero when the tunnel does not reach `connected`, so a successful exit means the port is ready to use.
+- `connect` exits non-zero when the tunnel does not reach `connected`, so a successful exit (without `--no-wait`) confirms SSH authentication, not that the destination service is reachable.
 - Each command returns only what it touched: `connect <id>` / `disconnect <id>` / `hint <id>` return that one tunnel, `control connect <name>` that one control connection. Use `larimar status` for the full picture.
 - The Larimar daemon (menu bar app) must be running for these commands to work.
 - Tunnel IDs are defined in `~/.config/larimar/tunnels.toml`.
 - SSH connection details (user, port, key, ProxyJump, etc.) are delegated to `~/.ssh/config`.
-- If using 1Password SSH Agent, TouchID will be prompted automatically on first connection.
+- A configured 1Password SSH Agent may request approval through its own UI. Larimar uses the configured or inherited agent socket; it does not discover 1Password automatically.

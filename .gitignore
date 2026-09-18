@@ -10,3 +10,5 @@ result
 
 .DS_Store
 
+# Local agent guidance
+/AGENTS.md

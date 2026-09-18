@@ -56,7 +56,8 @@ struct Status: AsyncParsableCommand {
     )
 
     func run() async throws {
-        try await sendAndPrint(.status)
+        let data = try await request(.status)
+        emit(CLIOutput(tunnels: data.tunnels, controls: data.controls))
     }
 }
 
@@ -91,50 +92,54 @@ struct Connect: AsyncParsableCommand {
     func run() async throws {
         let command: IPCCommand = all ? .connectAll : .connect(tunnelId: tunnelId!)
         let data = try await request(command)
+        let targets = all ? data.tunnels : data.tunnels.filter { $0.id == tunnelId! }
         guard !noWait else {
-            emit(CLIOutput(tunnels: data.tunnels, controls: data.controls))
+            emit(CLIOutput(tunnels: targets))
             return
         }
         try await waitUntilSettled(
-            tunnelIds: data.tunnels.filter { $0.status.isActive }.map(\.id),
+            tunnelIds: targets.filter { $0.status.isActive }.map(\.id),
             timeout: timeout
         )
     }
 }
 
-/// Polls the daemon until every requested tunnel has left `connecting`.
+/// Polls the daemon until every requested tunnel has connected or failed.
 ///
-/// A tunnel that fails to connect ends up in `error`, or in `reconnecting` when
-/// auto-reconnect keeps retrying in the background; both count as settled, so
-/// the command reports the failure instead of blocking until the timeout.
+/// A failed attempt leaves the tunnel in `error`, or — when auto-reconnect keeps
+/// retrying in the background — in `reconnecting` and then back in `connecting`
+/// with the previous error still attached. Since `connect` clears the error
+/// before the first attempt, a `connecting` tunnel that carries one has already
+/// failed at least once, so the command reports it instead of waiting out the
+/// whole backoff.
 private func waitUntilSettled(tunnelIds: [String], timeout: Double) async throws {
     let pollInterval = Duration.milliseconds(250)
     let deadline = ContinuousClock.now + .seconds(timeout)
     let waitingFor = Set(tunnelIds)
 
     while true {
-        let data = try await request(.status)
-        let pending = data.tunnels.filter { waitingFor.contains($0.id) && $0.status == .connecting }
+        let targets = try await request(.status).tunnels.filter { waitingFor.contains($0.id) }
+        let pending = targets.filter { $0.status == .connecting && $0.errorMessage == nil }
+        let pendingIds = Set(pending.map(\.id))
+        let failed = targets.filter { $0.status != .connected && !pendingIds.contains($0.id) }
+
+        guard failed.isEmpty else {
+            emit(CLIOutput(
+                success: false,
+                tunnels: targets,
+                error: "Failed to connect: " + failed.map { describeFailure($0) }.joined(separator: ", ")
+            ))
+            throw ExitCode.failure
+        }
         if pending.isEmpty {
-            let failed = data.tunnels.filter { waitingFor.contains($0.id) && $0.status != .connected }
-            guard failed.isEmpty else {
-                emit(CLIOutput(
-                    success: false,
-                    tunnels: data.tunnels,
-                    controls: data.controls,
-                    error: "Failed to connect: " + failed.map { describeFailure($0) }.joined(separator: ", ")
-                ))
-                throw ExitCode.failure
-            }
-            emit(CLIOutput(tunnels: data.tunnels, controls: data.controls))
+            emit(CLIOutput(tunnels: targets))
             return
         }
 
         guard ContinuousClock.now < deadline else {
             emit(CLIOutput(
                 success: false,
-                tunnels: data.tunnels,
-                controls: data.controls,
+                tunnels: targets,
                 error: "Timed out after \(Int(timeout))s waiting for: " + pending.map(\.id).joined(separator: ", ")
             ))
             throw ExitCode.failure
@@ -177,7 +182,8 @@ struct Disconnect: AsyncParsableCommand {
 
     func run() async throws {
         let command: IPCCommand = all ? .disconnectAll : .disconnect(tunnelId: tunnelId!)
-        try await sendAndPrint(command)
+        let data = try await request(command)
+        emit(CLIOutput(tunnels: all ? data.tunnels : data.tunnels.filter { $0.id == tunnelId! }))
     }
 }
 
@@ -189,7 +195,7 @@ struct List: AsyncParsableCommand {
     )
 
     func run() async throws {
-        try await sendAndPrint(.list)
+        emit(CLIOutput(tunnels: try await request(.list).tunnels))
     }
 }
 
@@ -204,7 +210,8 @@ struct Remove: AsyncParsableCommand {
     var tunnelId: String
 
     func run() async throws {
-        try await sendAndPrint(.remove(tunnelId: tunnelId))
+        _ = try await request(.remove(tunnelId: tunnelId))
+        emit(CLIOutput(removed: tunnelId))
     }
 }
 
@@ -231,7 +238,8 @@ struct Hint: AsyncParsableCommand {
     }
 
     func run() async throws {
-        try await sendAndPrint(.setHint(tunnelId: tunnelId, hint: clear ? nil : text))
+        let data = try await request(.setHint(tunnelId: tunnelId, hint: clear ? nil : text))
+        emit(CLIOutput(tunnels: data.tunnels.filter { $0.id == tunnelId }))
     }
 }
 
@@ -254,7 +262,8 @@ struct ControlConnect: AsyncParsableCommand {
     var name: String
 
     func run() async throws {
-        try await sendAndPrint(.connectControl(name: name))
+        let data = try await request(.connectControl(name: name))
+        emit(CLIOutput(controls: (data.controls ?? []).filter { $0.name == name }))
     }
 }
 
@@ -268,7 +277,8 @@ struct ControlDisconnect: AsyncParsableCommand {
     var name: String
 
     func run() async throws {
-        try await sendAndPrint(.disconnectControl(name: name))
+        let data = try await request(.disconnectControl(name: name))
+        emit(CLIOutput(controls: (data.controls ?? []).filter { $0.name == name }))
     }
 }
 
@@ -293,6 +303,7 @@ private struct CLIOutput: Encodable {
     var success = true
     var tunnels: [TunnelInfo]?
     var controls: [ControlInfo]?
+    var removed: String?
     var version: String?
     var help: String?
     var error: String?
@@ -300,11 +311,6 @@ private struct CLIOutput: Encodable {
     static func failure(_ error: String) -> CLIOutput {
         CLIOutput(success: false, error: error)
     }
-}
-
-private func sendAndPrint(_ command: IPCCommand) async throws {
-    let data = try await request(command)
-    emit(CLIOutput(tunnels: data.tunnels, controls: data.controls))
 }
 
 /// Sends a command to the daemon, reporting any failure as JSON and exiting.

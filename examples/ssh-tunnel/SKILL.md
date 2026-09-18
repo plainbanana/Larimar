@@ -76,7 +76,7 @@ curl -s --unix-socket "$S" -X DELETE http://larimar/v1/forwards/<id>
 
 - Every `larimar` command prints a single JSON object on stdout: `{"success": true, "tunnels": [...], "controls": [...]}` on success, `{"success": false, "error": "..."}` with a non-zero exit code on failure. Parse it instead of matching on text.
 - `connect` exits non-zero when the tunnel does not reach `connected`, so a successful exit means the port is ready to use.
-- Every command returns the full tunnel list, so `larimar connect <id>` already shows the resulting state — no follow-up `larimar status` needed.
+- Each command returns only what it touched: `connect <id>` / `disconnect <id>` / `hint <id>` return that one tunnel, `control connect <name>` that one control connection. Use `larimar status` for the full picture.
 - The Larimar daemon (menu bar app) must be running for these commands to work.
 - Tunnel IDs are defined in `~/.config/larimar/tunnels.toml`.
 - SSH connection details (user, port, key, ProxyJump, etc.) are delegated to `~/.ssh/config`.

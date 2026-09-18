@@ -201,7 +201,7 @@ larimar remove dyn:1a2b3c4d                 # Remove a dynamic forward
 larimar control connect devbox              # Connect/disconnect a control connection
 ```
 
-The CLI communicates with the daemon via a Unix domain socket at `~/Library/Application Support/Larimar/larimar.sock`. The daemon must be running. Every command prints a single JSON object on stdout, so the output can be piped straight into `jq` or a coding agent.
+The CLI communicates with the daemon via a Unix domain socket at `~/Library/Application Support/Larimar/larimar.sock`. The daemon must be running. Every command prints a single JSON object on stdout, so the output can be piped straight into `jq` or a coding agent. A command reports only the tunnels it touched; `larimar status` shows everything.
 
 `connect` blocks until the tunnel is connected — which includes waiting for an SSH agent prompt such as TouchID — and fails if it does not come up within `--timeout` seconds (default 60). Pass `--no-wait` to return as soon as the connection is requested.
 
